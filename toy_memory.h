@@ -5,11 +5,14 @@
 #include <vector>
 
 #include "llvm/IR/Value.h"
+#include "llvm/IR/GlobalValue.h"
 
 namespace toyc
 {
 
-//TODO: how to create packed struct in IR?
+///////////////////////////////////////////////////////////////////////////////////////////////////
+//									CStruct
+//
 class CStruct
 {
 protected:
@@ -20,11 +23,35 @@ public:		//debug
 	void print(void);
 
 public:
+	void push_struct_array(llvm::Module& M, llvm::StructType* stru, int n);
+
+	template<typename T>
+	void push_scalar_array(llvm::Module& M, int bits, int n) {
+		llvm::Type* ty = llvm::Type::getScalarTy<T>(M.getContext());
+		switch (ty->getTypeID()) {
+		case llvm::Type::IntegerTyID:
+			members.push_back(llvm::ArrayType::get(llvm::IntegerType::get(M.getContext(), bits), n));
+			break;
+		case llvm::Type::FloatTyID:
+			members.push_back(llvm::ArrayType::get(llvm::Type::getFloatTy(M.getContext()), n));
+			break;
+		case llvm::Type::DoubleTyID:
+			members.push_back(llvm::ArrayType::get(llvm::Type::getDoubleTy(M.getContext()), n));
+			break;
+		default:
+			assert(0 && "not implemented");
+			break;
+		}
+	}
+
 	void push_struct_pointer(llvm::Module& M, llvm::StructType* stru);
+	void push_struct(llvm::Module& M, llvm::StructType* stru);
+
 	template<typename T>
 	void push_scalar_pointer(llvm::Module& M) {
 		members.push_back(llvm::PointerType::get(llvm::Type::getScalarTy<T>(M.getContext()), 0));
 	}
+
 	template<typename T>
 	void push(llvm::Module& M, int bits = 8) {
 		llvm::Type* ty = llvm::Type::getScalarTy<T>(M.getContext());
@@ -44,18 +71,32 @@ public:
 		}
 		//members.push_back(Type::getScalarTy<T>(M.getContext(), bits));
 	}
-	llvm::StructType* create(llvm::Module& M, const char* name) {
-		stru = llvm::StructType::create(M.getContext(), name);
+
+	llvm::StructType* create(llvm::Module& M, const char* name, bool isPacked = false) {
+		if (isPacked) {
+			stru = llvm::StructType::create(M.getContext(), members, name, isPacked);
+		}
+		else {
+			stru = llvm::StructType::create(M.getContext(), name);
+		}
 		return stru;
 	}
-	void setBody(void); 
+
+	void setBody(bool isPacked = false);
 };
 
-
+///////////////////////////////////////////////////////////////////////////////////////////////////
+//									APIs
+//
 llvm::GlobalVariable* new_global_variable(llvm::Module& M, const char* name, llvm::Type* ty, 
 	llvm::GlobalValue::LinkageTypes linkage = llvm::GlobalValue::CommonLinkage, int align = 0);
 void delete_global_variable(llvm::Module& M, llvm::GlobalVariable*g);
 
+uint64_t getElementOffset(llvm::Module&mod, llvm::StructType* st, uint32_t index);
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+//									CGlobalVariables
+//
 class CGlobalVariables
 {
 protected:
@@ -71,14 +112,29 @@ public:
 	void setAlign(int align);
 
 public:
-	template<class T>void create(const char* name){create(name, Type::getScalarTy<T>(M->getContext()));}
-	void create(const char* name, llvm::Type* ty);
+	template<class T>
+	llvm::GlobalVariable* create(const char* name){
+		return create(name, llvm::Type::getScalarTy<T>(M->getContext()));
+	}
+
+	llvm::GlobalVariable* create(const char* name, llvm::Type* ty);
+
+	template<class T>
+	llvm::GlobalVariable* create_array(const char* name, int n) {
+		return create(name, llvm::ArrayType::get(llvm::Type::getScalarTy<T>(M->getContext()), n));
+	}
+
+	llvm::GlobalVariable* create_struct_array(const char* name, llvm::StructType* stru, int n);
+
+
 	void destroy(const char* name);
 	llvm::GlobalVariable* find(const char* name);
 };
 
 
+void test_toy_memory_packed(llvm::Module& M);
 void test_toy_memory(llvm::Module& M);
+void test_global_variable(CGlobalVariables& gVars, llvm::Module& M);
 
 };
 
