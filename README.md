@@ -8,6 +8,8 @@ for example: <br>
 3, how to call exernal functions? <br>
 4, how to use struct? <br>
 <br>
+All functions are in testllvm.cpp
+<br>
 
 
 KaleidoscopeJIT.h is from llvm repository
