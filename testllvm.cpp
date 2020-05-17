@@ -45,20 +45,11 @@ static void InitializeModuleAndPassManager() {
     TheFPM->doInitialization();
 }
 
-Function* createFunction(llvm::Module& m, const char* fn)
-{
-    CFunction function;
-    function.pushArg(Type::getDoubleTy(TheContext), "x");
-    function.pushArg(Type::getDoubleTy(TheContext), "y");
-    function.setRetType(Type::getDoubleTy(TheContext));
-    return function.create(m, Function::ExternalLinkage, fn);
-}
-
 llvm::GlobalVariable* create_global_variable(llvm::Module& M, const char* name, llvm::Type* ty, 
     llvm::GlobalValue::LinkageTypes linkage = GlobalValue::CommonLinkage, int align = 0)  //CommonLinkage ExternalLinkage
 {
-    test_toy_memory(M);
-    test_toy_memory_packed(M);
+    //test_toy_memory(M);
+    //test_toy_memory_packed(M);
 
     CGlobalVariables gVars;
     gVars.setModule(&M);
@@ -76,82 +67,100 @@ static AllocaInst* CreateEntryBlockAlloca(Function* TheFunction,
 
 llvm::GlobalVariable* g;
 
-void createTestBB(const char* fn)
-{
-    Function* TheFunction = TheModule->getFunction(fn);
-    if (!TheFunction) {
-        errs() << fn << " not found\n";
-        return;
-    }
 
-    //
-    // create BB and set insert point
-    //
-    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", TheFunction);
+void createAddBB(Function* f)
+{
+    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
 
     Builder.SetInsertPoint(BB);
 
-    //
-    // function parameters.
-    //
     Value* vs[2];
     int idx = 0;
-    for (auto& Arg : TheFunction->args()) {
+    for (auto& Arg : f->args()) {
         vs[idx++] = &Arg;
     }
 
-#if 1
-    //AllocaInst* Alloca = CreateEntryBlockAlloca(TheFunction, "what");
-    //Builder.CreateStore(vs[0], g);
-    //LoadInst* Load0 = Builder.CreateLoad(Type::getDoubleTy(TheContext), g);
-    LoadInst* Load0 = Builder.CreateLoad(g);        
-    //Builder.CreateStore(vs[1], g);
-
-    LoadInst* Load1 = Builder.CreateLoad(g);
-    Value* Inc = Builder.CreateFAdd(vs[0], vs[1]); 
+    Value* Inc = Builder.CreateFAdd(vs[0], vs[1]);
     Builder.CreateRet(Inc);
-#endif
 
-    verifyFunction(*TheFunction);
-    TheFunction->print(errs());
+    verifyFunction(*f);
+    f->print(errs());
 }
 
-void test_call(const char* fn)
+//////////////////////////////////////////////////////////////////////////
+//                      test_global_variables
+// 
+void test_global_variables(void)
 {
+    g = create_global_variable(*TheModule.get(), "g", Type::getDoubleTy(TheContext));
+
+    CFunction function;
+    function.pushArg(Type::getDoubleTy(TheContext), "x");
+    function.pushArg(Type::getDoubleTy(TheContext), "y");
+    function.setRetType(Type::getDoubleTy(TheContext));
+    Function* f = function.create(*TheModule.get(), Function::ExternalLinkage, "tf1");
+
+    createAddBB(f);
+
+    auto H = TheJIT->addModule(std::move(TheModule));
+    InitializeModuleAndPassManager();
+    auto ExprSymbol = TheJIT->findSymbol("tf1");
+    double (*FP)(double, double) = (double (*)(double, double))(intptr_t)cantFail(ExprSymbol.getAddress());
+    fprintf(stderr, "Evaluated to %f\n", FP(1234, 5678));
+    TheJIT->removeModule(H);
+}
+
+//////////////////////////////////////////////////////////////////////////
+//                      test_call_extern
+// 
+#ifdef _WIN32
+#define DLLEXPORT __declspec(dllexport)
+#else
+#define DLLEXPORT
+#endif
+
+extern "C" DLLEXPORT double putchard(char c) {
+    fputc(c, stderr);
+    return 0;
+}
+
+void test_call_extern(void)
+{
+    CFunction function;
+    function.pushArg(Type::getInt8Ty(TheContext), "c");
+    function.setRetType(Type::getDoubleTy(TheContext));
+    Function* f = function.create(*TheModule.get(), Function::ExternalLinkage, "putchard");
+
     auto H = TheJIT->addModule(std::move(TheModule));
 
     InitializeModuleAndPassManager();
-
-    auto ExprSymbol = TheJIT->findSymbol(fn);
-    assert(ExprSymbol && "Function not found");
-
-    double (*FP)(double, double) = (double (*)(double,double))(intptr_t)cantFail(ExprSymbol.getAddress());
-    if (FP) {
-        fprintf(stderr, "Evaluated to %f\n", FP(1234, 5678));
-    }
-    else {
-        errs() << fn << " not found\n";
-    }
+    auto ExprSymbol = TheJIT->findSymbol("putchard");
+    double (*FP)(char) = (double (*)(char))(intptr_t)cantFail(ExprSymbol.getAddress());
+    errs() << "putchard" << " not found\n";
 
     TheJIT->removeModule(H);
 }
 
+
 int main()
 {
+    _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
+
     InitializeNativeTarget();
     InitializeNativeTargetAsmPrinter();
     InitializeNativeTargetAsmParser();
 
-    //KaleidoscopeJIT is copied from LVMM test project.
+    //KaleidoscopeJIT is copied from LLVM test project.
     TheJIT = std::make_unique<KaleidoscopeJIT>();
     InitializeModuleAndPassManager();
 
-    g = create_global_variable(*TheModule.get(), "g", Type::getDoubleTy(TheContext));      
-
-    createFunction(*TheModule.get(), "tf1");
-    createTestBB("tf1");
-
-    test_call("tf1");
+    //
+    // tests
+    //
+    //test_toy_memory(M);
+    //test_toy_memory_packed(M);
+    test_global_variables();
+    //test_call_extern();
 
     return 0;
 }
