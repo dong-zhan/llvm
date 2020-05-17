@@ -136,7 +136,8 @@ void test_call_extern(void)
     InitializeModuleAndPassManager();
     auto ExprSymbol = TheJIT->findSymbol("putchard");
     double (*FP)(char) = (double (*)(char))(intptr_t)cantFail(ExprSymbol.getAddress());
-    errs() << "putchard" << " not found\n";
+    for(int i=0;i<26;i++)FP('a'+i);
+    errs() << "\n";
 
     TheJIT->removeModule(H);
 }
