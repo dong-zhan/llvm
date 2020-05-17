@@ -19,10 +19,3 @@ to <br>
 [this](const llvm::StringRef& Name) { return findMangledSymbol(Name.str()); }, <br>
 
 
-
-some thoughts <br>
-1, Making this in C is not a good idea, because, it's "usually" for JIT, C is already too low level.<br>
-2, So, it is for a "pure" compiler, or static/dynamic mixed type compiler.<br>
-3, the correct way to make a "middelware" of LLVM is to read their structure carefully, have a big picture of that.<br>
-   the faster(dangerous) way is to build from small details, let the details jell themselves.<br>
-4, I am trying my luck now :)<br>
