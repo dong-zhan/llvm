@@ -143,8 +143,37 @@ void test_call_external_function(void)
     TheJIT->removeModule(H);
 }
 
+//////////////////////////////////////////////////////////////////////////
+//                      test_call_external_variadic 
+// 
+void test_call_external_variadic(void)
+{
+#if 0
+    Type* args = PointerType::get(Type::getInt8Ty(TheContext), 0);
+    Type* retType = IntegerType::getInt8PtrTy(TheContext);
+#else
+    std::vector<Type*> args;
+    args.push_back(Type::getInt8PtrTy(TheContext));
+    Type* retType = Builder.getInt32Ty();
+#endif
 
+    FunctionType* printfType = FunctionType::get(retType, args, true);
+    TheModule.get()->getOrInsertFunction("printf", printfType);
 
+    auto H = TheJIT->addModule(std::move(TheModule));
+
+    InitializeModuleAndPassManager();
+    auto ExprSymbol = TheJIT->findSymbol("printf");
+    void (*FP)(...) = (void (*)(...))(intptr_t)cantFail(ExprSymbol.getAddress());
+    FP("%s = %d\n", "hero", 100);
+    errs() << "\n";
+
+    TheJIT->removeModule(H);
+}
+
+//////////////////////////////////////////////////////////////////////////
+//                      test_constant
+// 
 Constant* test_constant(Module&M)
 {
     // create struct
@@ -167,7 +196,9 @@ Constant* test_constant(Module&M)
 }
 
 
-
+//////////////////////////////////////////////////////////////////////////
+//                      test_struct
+// 
 struct munger_struct {
     int i;
     char c;
@@ -364,7 +395,8 @@ int main()
     //test_global_variables();        //basic function calls
     //test_call_external_function();
     //test_string();
-    test_struct();
+    //test_struct();
+    test_call_external_variadic();
 
     return 0;
 }
