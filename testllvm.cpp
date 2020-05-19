@@ -1,3 +1,8 @@
+//      pending
+// 1, address space cast(pointer cast)
+// 2, 
+
+
 #include "stdafx.h"
 
 
@@ -7,6 +12,7 @@
 #include "toy_function.h"
 #include "toy_instruction.h"
 #include "toy_memory.h"
+#include "toy_builder.h"
 
 
 using namespace llvm;
@@ -24,7 +30,28 @@ static std::unique_ptr<KaleidoscopeJIT> TheJIT;
 
 using namespace std;
 
-CGlobalVariables gVars;
+#define PP(x) errs() << #x":"; x->print(errs()); errs() << "\n";
+
+FunctionCallee declare_malloc(void)
+{
+    std::vector<Type*> args;
+    args.push_back(Type::getInt64Ty(TheContext));
+    Type* retType = PointerType::get(Type::getVoidTy(TheContext), 0);
+    FunctionType* mallocType = FunctionType::get(retType, args, false);
+    FunctionCallee func = TheModule.get()->getOrInsertFunction("malloc", mallocType);
+    return func;
+}
+
+FunctionCallee declare_free(void)
+{
+    std::vector<Type*> args;
+    args.push_back(PointerType::get(Type::getVoidTy(TheContext), 0));
+    Type* retType = Builder.getVoidTy();
+    FunctionType* freeType = FunctionType::get(retType, args, false);
+    FunctionCallee func = TheModule.get()->getOrInsertFunction("free", freeType);
+    return func;
+}
+
 
 static void InitializeModuleAndPassManager() {
     // Open a new module.
@@ -144,6 +171,242 @@ void test_call_external_function(void)
 }
 
 //////////////////////////////////////////////////////////////////////////
+//                      createBB_external_variables 
+// 
+float gFloat = 111.f;
+double gDouble = 222.;
+
+void createBB_external_variables(Module& M, Function* f)
+{
+    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
+    Builder.SetInsertPoint(BB);
+    
+    Value* fp = CBuilder::CreateIntToPtr(Builder, TheContext, &gFloat);
+    Value* dp = CBuilder::CreateIntToPtr(Builder, TheContext, &gDouble);
+
+    Value* vfp = Builder.CreateLoad(fp);
+    Value* vdp = Builder.CreateLoad(dp);
+    
+#define TEST_MULTIPLICATION
+#ifdef TEST_MULTIPLICATION
+    Value* vmfp = Builder.CreateFMul(vfp, CConstant::getFloat(TheContext, 2.f));
+    Value* vmdp = Builder.CreateFMul(vdp, CConstant::getDouble(TheContext, 2.));
+
+    Builder.CreateStore(vmfp, fp);
+    Builder.CreateStore(vmdp, dp);
+#endif
+
+//#define FP_EXTEND
+#ifdef FP_EXTEND
+    Value* extended = Builder.CreateFPExt(vfp, Type::getDoubleTy(TheContext));
+    Builder.CreateStore(extended, dp);
+#endif
+
+//#define FP_TRUNC
+#ifdef FP_TRUNC
+    Value* extended = Builder.CreateFPTrunc(vdp, Type::getFloatTy(TheContext));
+    Builder.CreateStore(extended, fp);
+#endif
+
+    Builder.CreateRet(CConstant::getInt8(TheContext, 'X'));
+
+    verifyFunction(*f);
+    f->print(errs());
+}
+
+//////////////////////////////////////////////////////////////////////////
+//                      createBB_truncate 
+// 
+/*
+char f(void)
+{
+  int x = 0x12345678;
+  char c = (char)x;
+  return c;
+}
+define signext i8 @f() #0 {
+  %1 = alloca i32, align 4
+  %2 = alloca i8, align 1
+  store i32 305419896, i32* %1, align 4
+  %3 = load i32, i32* %1, align 4
+  %4 = trunc i32 %3 to i8
+  store i8 %4, i8* %2, align 1
+  %5 = load i8, i8* %2, align 1
+  ret i8 %5
+}
+*/
+void createBB_truncate(Module& M, Function* f)
+{
+    // start inserting instructions
+    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
+    Builder.SetInsertPoint(BB);
+
+    AllocaInst* a32 = CreateEntryBlockAlloca(Type::getInt32Ty(TheContext), f, "");
+    AllocaInst* a8 = CreateEntryBlockAlloca(Type::getInt8Ty(TheContext), f, "");
+    
+    Builder.CreateStore(CConstant::getInt32(TheContext, 0x12345678), a32);
+    Value* v32 = Builder.CreateLoad(a32);
+    Value* truncated = Builder.CreateTrunc(v32, Type::getInt8Ty(TheContext));
+    Builder.CreateStore(truncated, a8);
+
+    Builder.CreateRet(Builder.CreateLoad(a8));
+
+    verifyFunction(*f);
+    f->print(errs());
+}
+
+//////////////////////////////////////////////////////////////////////////
+//                      createBB_sext_zext 
+// 
+/*
+int f(void)
+{
+  char a = 'Y';
+  return (int)a;
+}
+
+define i32 @f() #0 {
+  %1 = alloca i8, align 1
+  store i8 89, i8* %1, align 1
+  %2 = load i8, i8* %1, align 1
+  %3 = sext i8 %2 to i32
+  ret i32 %3
+}
+*/
+void createBB_sext_zext(Module& M, Function* f)
+{
+    // start inserting instructions
+    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
+    Builder.SetInsertPoint(BB);
+
+    //NOTE: a8 is a pointer, that points to a stack location, to use its value, load first.
+    //this address a8 is not the runtime address?? (it's very different from function address)
+    AllocaInst* a8 = CreateEntryBlockAlloca(Type::getInt8Ty(TheContext), f, "");
+    Builder.CreateStore(CConstant::getInt8(TheContext, -1), a8);        
+    Value* loaded = Builder.CreateLoad(a8);
+    Value* a8Ext = Builder.CreateSExt(loaded, Type::getInt32Ty(TheContext));  
+    //sext: 0xff -> 0xffffffff
+    //zext: 0xff -> 0x000000ff
+    Builder.CreateRet(a8Ext);
+
+    verifyFunction(*f);
+    f->print(errs());
+}
+
+
+//////////////////////////////////////////////////////////////////////////
+//                      createBB_cast 
+// 
+/*
+result:
+define i32 @tf1() {
+entry:
+  %0 = call void* @malloc(i32 4)
+  %1 = bitcast void* %0 to %stru*
+  %2 = getelementptr %stru, %stru* %1, i32 0, i32 0
+  store i32 1234, i32* %2, align 4
+  %3 = load i32, i32* %2, align 4
+  call void @free(void* %0)
+  ret i32 %3
+}
+*/
+void createBB_cast(Module& M, Function* f)
+{
+    // declare malloc and free
+    FunctionCallee fmalloc = declare_malloc();
+    FunctionCallee ffree = declare_free();
+
+    // create struct
+    CStruct stru;
+    stru.push<int>(M, 32);
+    StructType* sty = stru.create(M, "stru");
+    stru.setBody();
+    PP(sty);
+
+    // create pointer struct (not used)
+    PointerType* psty = PointerType::get(sty, 0);
+    PP(psty);
+
+    // start inserting instructions
+    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
+    Builder.SetInsertPoint(BB);
+
+    //malloc 4 bytes, the sizeof the struct
+    std::vector<Value*>args;
+    args.push_back(CConstant::getInt32(TheContext, 4));
+    CallInst* inst = Builder.CreateCall(fmalloc, args);
+    //PP(inst);
+
+    // cast (void*) to (struct*)
+    Value* casted = Builder.CreateBitCast(inst, psty);
+    PP(casted);
+
+    // store 0x12345678 to struct.int
+    std::vector<Value*>indices;
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    Value* gep = Builder.CreateGEP(casted, indices);        //crashes solve: forgot to setbody()
+
+    //
+    Builder.CreateStore(ConstantInt::get(Type::getInt32Ty(TheContext), 0x12345678), gep);
+
+    //
+
+    // do a load from the stored address (for returning)
+    Value* loadedV2 = Builder.CreateLoad(gep);
+    //* loadedV2 = Builder.CreateLoad(a8Ext);
+
+    // free allocated
+    args.clear();
+    args.push_back(inst);
+    Builder.CreateCall(ffree, args);
+
+    Builder.CreateRet(loadedV2);
+
+    verifyFunction(*f);
+    f->print(errs());
+}
+
+//////////////////////////////////////////////////////////////////////////
+//                      test_create_JIT 
+// 
+void test_create_JIT(Module& M)
+{
+ 
+}
+
+//////////////////////////////////////////////////////////////////////////
+//                      test_datalayout 
+// 
+void test_datalayout(Module& M)
+{
+    errs() << M.getDataLayoutStr() << "\n";
+
+    DataLayout layout = M.getDataLayout();
+
+    errs() << "integer bitwidth 37 is " << (layout.isLegalInteger(37) ? "legal" : "illegal") << "\n";
+    errs() << "integer bitwidth 64 is " << (layout.isLegalInteger(64) ? "legal" : "illegal") << "\n";
+
+    errs() << (layout.isBigEndian() ? "big endian" : "little endian") << "\n";
+
+    errs() << (layout.isNonIntegralAddressSpace(0) ? "NonIntegralAddressSpace" : "IntegralAddressSpace") << "\n";
+}
+
+//////////////////////////////////////////////////////////////////////////
+//                      test_conversion 
+// 
+void test_conversion(Module&M)
+{
+    CGlobalVariables gVars;
+    gVars.setModule(&M);
+    Value* gv = gVars.create<char>("gv", CConstant::getInt8(M.getContext(), 'X'));
+    errs() << "gv:"; gv->print(errs()); errs() << "\n";
+
+    Value* ex = Builder.CreateZExt(gv, Type::getInt32Ty(M.getContext()));
+    errs() << "ex:"; ex->print(errs()); errs() << "\n";
+}
+
+//////////////////////////////////////////////////////////////////////////
 //                      test_call_external_variadic 
 // 
 void test_call_external_variadic(void)
@@ -213,7 +476,7 @@ char f(void)
     return stru.c;
 }
 
----------- expect ----------------->
+---------- expect(from clang generated IR)  ----------------->
 
 @stru = global %struct.munger_struct { i32 0, i8 88, float 0.000000e+00, double 0.000000e+00 }, align 8
 
@@ -265,7 +528,7 @@ void createBB_struct(Module&M, Function* f)
     Builder.SetInsertPoint(BB);
     //Builder.saveIP();
 
-    Value* gep = Builder.CreateGEP(gv, indices);
+    Value* gep = Builder.CreateGEP(gv, indices);        //crashes solve: forgot to setbody()
     Value* loadedV = Builder.CreateLoad(gep, "");
 
     Builder.CreateRet(loadedV);
@@ -274,23 +537,39 @@ void createBB_struct(Module&M, Function* f)
     f->print(errs());
 }
 
-void test_struct(void)
+//////////////////////////////////////////////////////////////////////////
+//                      createBB_mutable
+// 
+/*
+char f(void)
 {
-    CFunction function;
-    function.setRetType(Type::getInt32Ty(TheContext));
-    Function* f = function.create(*TheModule.get(), Function::ExternalLinkage, "tf1");
+  char a;
+  a = 'Y';
+  return a;
+}
 
-    createBB_struct(*TheModule.get(), f);
+expect(from clang generated IR):
+define signext i8 @f() #0 {
+  %1 = alloca i8, align 1
+  store i8 89, i8* %1, align 1
+  %2 = load i8, i8* %1, align 1
+  ret i8 %2
+}
+*/
+void createBB_mutable(Module& M, Function* f)
+{
+    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
+    Builder.SetInsertPoint(BB);
+    //Builder.saveIP();
 
-    auto H = TheJIT->addModule(std::move(TheModule));
+    AllocaInst* Alloca = CreateEntryBlockAlloca(Type::getInt8Ty(TheContext), f, "");
 
-    InitializeModuleAndPassManager();
-    auto ExprSymbol = TheJIT->findSymbol("tf1");
-    char (*FP)() = (char (*)())(intptr_t)cantFail(ExprSymbol.getAddress());
-    char c = FP();
-    errs() << "output:" << c << "\n";
+    Builder.CreateStore(CConstant::getInt8(TheContext, 'Y'), Alloca);
 
-    TheJIT->removeModule(H);
+    Builder.CreateRet(Builder.CreateLoad(Alloca));
+
+    verifyFunction(*f);
+    f->print(errs());
 }
 
 
@@ -304,7 +583,7 @@ char f()
     return s[0];
 }
 
-  --------> expect --------> 
+  --------> expect(from clang generated IR) --------> 
 
  @.str = private unnamed_addr constant [5 x i8] c"test\00", align 1
 define signext i8 @f() #0 {
@@ -317,7 +596,7 @@ define signext i8 @f() #0 {
 }
 */
 
-void createBB_string(Function* f)
+void createBB_string(Module& M, Function* f)
 {
     // create string
     CGlobalVariables g;
@@ -338,13 +617,14 @@ void createBB_string(Function* f)
 
     AllocaInst* Alloca = CreateEntryBlockAlloca(Type::getInt8PtrTy(TheContext), f, "");
 
-    Value* gep = Builder.CreateGEP(gv, indices);
+    Value* gep = Builder.CreateGEP(gv, indices);        //crashes solve: forgot to setbody()
+    //PP(gep);
     
     Builder.CreateStore(gep, Alloca);
 
     Value* loadedV = Builder.CreateLoad(Alloca, "");
 
-    Value* gep2 = Builder.CreateGEP(loadedV, ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    Value* gep2 = Builder.CreateGEP(loadedV, ConstantInt::get(Type::getInt32Ty(TheContext), 0));        //crashes solve: forgot to setbody()
 
     Value* loadedV2 = Builder.CreateLoad(gep2, "");
 
@@ -354,21 +634,45 @@ void createBB_string(Function* f)
     f->print(errs());
 }
 
-void test_string(void)
+
+template<class RETT = int>
+void call_function(void(*func)(Module& M, Function* f))
 {
     CFunction function;
-    function.setRetType(Type::getInt32Ty(TheContext));
+    if (sizeof(RETT) == 1) {
+        function.setRetType(Type::getInt8Ty(TheContext));
+    }
+    else if (sizeof(RETT) == 2) {
+        function.setRetType(Type::getInt16Ty(TheContext));
+    }
+    else if (sizeof(RETT) == 4) {
+        function.setRetType(Type::getInt32Ty(TheContext));
+    }
+    else {
+        function.setRetType(Type::getInt64Ty(TheContext));
+    }
     Function* f = function.create(*TheModule.get(), Function::ExternalLinkage, "tf1");
 
-    createBB_string(f);
+    func(*TheModule.get(), f);
 
     auto H = TheJIT->addModule(std::move(TheModule));
 
     InitializeModuleAndPassManager();
     auto ExprSymbol = TheJIT->findSymbol("tf1");
-    char (*FP)() = (char (*)())(intptr_t)cantFail(ExprSymbol.getAddress());
-    char c = FP();
-    errs() << "output:" << c << "\n";
+    RETT(*FP)() = (RETT(*)())(intptr_t)cantFail(ExprSymbol.getAddress());
+    //printf("function address = %p\n", FP);
+    RETT c = FP();
+    if (sizeof(RETT) == 1) {
+        printf("output: 0x%x'%c'\n", c, c);
+    }
+    else if (sizeof(RETT) == 4 || sizeof(RETT) == 2) {
+        printf("output: 0x%x\n", c);
+    }
+    else {
+        printf("output: 0x%p\n", c);
+    }
+
+    printf("result: %f, %f\n", gFloat, gDouble);   //result of createBB_external_variables
 
     TheJIT->removeModule(H);
 }
@@ -388,15 +692,25 @@ int main()
     //
     // tests
     //
-    //test_GEP(*TheModule.get());
     //test_constant(*TheModule.get());
     //test_toy_memory(M);
     //test_toy_memory_packed(M);
     //test_global_variables();        //basic function calls
     //test_call_external_function();
-    //test_string();
-    //test_struct();
-    test_call_external_variadic();
+    //call_function<char>(createBB_string);
+    //call_function<char>(createBB_struct);
+    //test_call_external_variadic();
+    //test_conversion(*TheModule.get());
+    //test_datalayout(*TheModule.get());
+
+    //call_function<char>(createBB_mutable);
+
+    test_create_JIT(*TheModule.get());
+
+    //call_function<int>(createBB_cast);	
+    //call_function<int>(createBB_sext_zext);
+    //call_function<char>(createBB_truncate);
+    call_function<char>(createBB_external_variables);       //IntToPtr, fpext, fptrunc are all here too.
 
     return 0;
 }
