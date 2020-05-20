@@ -1,6 +1,10 @@
 //      pending
 // 1, address space cast(pointer cast)
-// 2, 
+// 2, use getPointerTo
+
+
+// 1, getelementptr(struct, struct_ptr, index0, index1)
+//  result: struct_ptr + index0
 
 
 #include "stdafx.h"
@@ -71,6 +75,74 @@ static void InitializeModuleAndPassManager() {
     TheFPM->add(createCFGSimplificationPass());
 
     TheFPM->doInitialization();
+}
+
+void create_BB(void(*func)(Module&, Function*), Function* f)
+{
+    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
+    Builder.SetInsertPoint(BB);
+
+    func(*TheModule.get(), f);
+
+    verifyFunction(*f);
+    f->print(errs());
+}
+
+template<class RETT = int>
+void call_function(void(*func)(Module&, Function*), Function* inputF = nullptr)
+{
+    //if no inputF, create a default one.
+    Function* f;
+    if (inputF) {
+        f = inputF;
+    }
+    else {
+        CFunction function;
+        if (sizeof(RETT) == 1) {
+            function.setRetType(Type::getInt8Ty(TheContext));
+        }
+        else if (sizeof(RETT) == 2) {
+            function.setRetType(Type::getInt16Ty(TheContext));
+        }
+        else if (sizeof(RETT) == 4) {
+            function.setRetType(Type::getInt32Ty(TheContext));
+        }
+        else {
+            function.setRetType(Type::getInt64Ty(TheContext));
+        }
+        f = function.create(*TheModule.get(), Function::ExternalLinkage, "tf1");
+    }
+
+    // create bb for f
+    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
+    Builder.SetInsertPoint(BB);
+
+    //
+    func(*TheModule.get(), f);
+
+    verifyFunction(*f);
+    f->print(errs());
+
+    auto H = TheJIT->addModule(std::move(TheModule));
+
+    InitializeModuleAndPassManager();
+    auto ExprSymbol = TheJIT->findSymbol("tf1");
+    RETT(*FP)() = (RETT(*)())(intptr_t)cantFail(ExprSymbol.getAddress());
+    //printf("function address = %p\n", FP);
+    RETT c = FP();
+    if (sizeof(RETT) == 1) {
+        printf("output: 0x%x'%c'\n", c, c);
+    }
+    else if (sizeof(RETT) == 4 || sizeof(RETT) == 2) {
+        printf("output: 0x%x\n", c);
+    }
+    else {
+        printf("output: 0x%p\n", c);
+    }
+
+    printf("result: %f, %f\n", gFloat, gDouble);   //result of createBB_external_variables
+
+    TheJIT->removeModule(H);
 }
 
 llvm::GlobalVariable* create_global_variable(llvm::Module& M, const char* name, llvm::Type* ty, 
@@ -164,7 +236,160 @@ void test_call_external_function(void)
 }
 
 //////////////////////////////////////////////////////////////////////////
-//                      createBB_SSA 
+//                      create_virtualMethod 
+// 
+void create_virtualMethod(Module& M)
+{
+}
+
+//////////////////////////////////////////////////////////////////////////
+//                      createBB_class 
+// 
+class testClass {
+protected:
+    char name[32];
+    int age;
+public:
+    testClass() { age = 0; }
+    void setAge(int age) { this->age = age; }
+    int getAge(void) { return age; }
+};
+testClass testclass;
+StructType* sty_testClass;
+
+/*
+define void @tc_constructor(%testClass* %this) {
+entry:
+  %0 = getelementptr %testClass, %testClass* %this, i32 0, i32 1
+  store i32 999, i32* %0, align 4
+  ret void
+}
+*/
+void createBB_tc_constructor(Module& M, Function* f)
+{
+    Argument* pArgThis = f->getArg(0);
+   
+    std::vector<Value*>indices;
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
+
+    Builder.CreateStore(CConstant::getInt32(M.getContext(), 999), gep);
+
+    Builder.CreateRetVoid();
+}
+
+/*
+define void @tc_setAge(%testClass* %this, i32 %age) {
+entry:
+  %0 = getelementptr %testClass, %testClass* %this, i32 0, i32 1
+  store i32 %age, i32* %0, align 4
+  ret void
+}
+*/
+void createBB_tc_setAge(Module& M, Function* f)
+{
+    Argument* pArgThis = f->getArg(0);
+    Argument* pArgAge = f->getArg(1);
+
+    std::vector<Value*>indices;
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
+
+    Builder.CreateStore(pArgAge, gep);
+
+    Builder.CreateRetVoid();
+}
+
+void createBB_tc_getAge(Module& M, Function* f)
+{
+    Argument* pArgThis = f->getArg(0);
+
+    std::vector<Value*>indices;
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
+
+    Builder.CreateRet(Builder.CreateLoad(gep));
+}
+
+
+void create_testClass(Module& M)
+{
+    //
+    // create struct testClass
+    //
+    CStruct cs_testClass;
+    cs_testClass.push_scalar_array<char>(M, 8, 32);
+    cs_testClass.push<int>(M, 32);
+    sty_testClass = cs_testClass.create(M, "testClass");
+    cs_testClass.setBody();
+
+    //
+    //create 3 function declarations.
+    //
+    CFunction tc_constructor;
+    tc_constructor.pushArg(PointerType::get(sty_testClass, 0), "this");
+    tc_constructor.setRetType(Type::getVoidTy(M.getContext()));
+    Function* f_tc_constructor = tc_constructor.create(*TheModule.get(), Function::ExternalLinkage, "tc_constructor");
+
+    CFunction tc_setAge;
+    tc_setAge.pushArg(PointerType::get(sty_testClass, 0), "this");
+    tc_setAge.pushArg(Type::getInt32Ty(TheContext), "age");
+    tc_setAge.setRetType(Type::getVoidTy(M.getContext()));
+    Function* f_tc_setAge = tc_setAge.create(*TheModule.get(), Function::ExternalLinkage, "tc_setAge");
+
+    CFunction tc_getAge;
+    tc_getAge.pushArg(PointerType::get(sty_testClass, 0), "this");
+    tc_getAge.setRetType(Type::getInt32Ty(TheContext));
+    Function* f_tc_getAge = tc_getAge.create(*TheModule.get(), Function::ExternalLinkage, "tc_getAge");
+
+    //
+    // create basic block for each function
+    // 
+    create_BB(createBB_tc_constructor, f_tc_constructor);
+    printf("after construction, age = %d\n", testclass.getAge());
+    create_BB(createBB_tc_setAge, f_tc_setAge);
+    create_BB(createBB_tc_getAge, f_tc_getAge);
+
+    //
+    // call those functions
+    //
+    auto H = TheJIT->addModule(std::move(TheModule));
+
+    InitializeModuleAndPassManager();
+
+    // construct
+    auto ExprSymbol = TheJIT->findSymbol("tc_constructor");
+    void(*FP_tc_constructor)(testClass*) = (void(*)(testClass*))(intptr_t)cantFail(ExprSymbol.getAddress());
+    
+    FP_tc_constructor(&testclass);
+    printf("FP_tc_constructor: age is %d\n", testclass.getAge());
+
+    //setAge
+    auto ExprSymbol1 = TheJIT->findSymbol("tc_setAge");
+    void(*FP_tc_setAge)(testClass*, int) = (void(*)(testClass*, int))(intptr_t)cantFail(ExprSymbol1.getAddress());
+
+    FP_tc_setAge(&testclass, 1234);
+    printf("FP_tc_setAge: age is %d\n", testclass.getAge());
+
+    //getAge
+    auto ExprSymbol2 = TheJIT->findSymbol("tc_getAge");
+    int(*FP_tc_getAge)(testClass*) = (int(*)(testClass*))(intptr_t)cantFail(ExprSymbol2.getAddress());
+
+    int age = FP_tc_getAge(&testclass);
+    printf("FP_tc_getAge: %d\n", age);
+
+    TheJIT->removeModule(H);
+
+    //
+    // 
+    //
+}
+
+//////////////////////////////////////////////////////////////////////////
+//                      createBB_SSA_PHI 
 // 
 /*
 result:
@@ -190,8 +415,8 @@ char a = 'a';
 char b = '0';
 void createBB_SSA_PHI(Module& M, Function* f)
 {
-    Value* pa = CBuilder::CreateIntToPtr(Builder, TheContext, &a);
-    Value* pb = CBuilder::CreateIntToPtr(Builder, TheContext, &b);
+    Value* pa = CBuilder::CreateIntToPtr<char>(Builder, TheContext, &a);
+    Value* pb = CBuilder::CreateIntToPtr<char>(Builder, TheContext, &b);
 
     Value* va = Builder.CreateLoad(pa);
     Value* vb = Builder.CreateLoad(pb);
@@ -229,13 +454,13 @@ double gDouble = 222.;
 
 void createBB_external_variables(Module& M, Function* f)
 {
-    Value* fp = CBuilder::CreateIntToPtr(Builder, TheContext, &gFloat);
-    Value* dp = CBuilder::CreateIntToPtr(Builder, TheContext, &gDouble);
+    Value* fp = CBuilder::CreateIntToPtr<float>(Builder, TheContext, &gFloat);
+    Value* dp = CBuilder::CreateIntToPtr<double>(Builder, TheContext, &gDouble);
 
     Value* vfp = Builder.CreateLoad(fp);
     Value* vdp = Builder.CreateLoad(dp);
     
-#define TEST_MULTIPLICATION
+//#define TEST_MULTIPLICATION
 #ifdef TEST_MULTIPLICATION
     Value* vmfp = Builder.CreateFMul(vfp, CConstant::getFloat(TheContext, 2.f));
     Value* vmdp = Builder.CreateFMul(vdp, CConstant::getDouble(TheContext, 2.));
@@ -250,7 +475,7 @@ void createBB_external_variables(Module& M, Function* f)
     Builder.CreateStore(extended, dp);
 #endif
 
-//#define FP_TRUNC
+#define FP_TRUNC
 #ifdef FP_TRUNC
     Value* extended = Builder.CreateFPTrunc(vdp, Type::getFloatTy(TheContext));
     Builder.CreateStore(extended, fp);
@@ -548,6 +773,7 @@ void createBB_struct(Module&M, Function* f)
     indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
     indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
 
+    //gv:@gv = private global %cs { i32 12345, i8 88, float 1.110000e+02, double 2.220000e+02 }, align 1
     Value* gep = Builder.CreateGEP(gv, indices);        //crashes solve: forgot to setbody()
     Value* loadedV = Builder.CreateLoad(gep, "");
 
@@ -638,54 +864,6 @@ void createBB_string(Module& M, Function* f)
 }
 
 
-template<class RETT = int>
-void call_function(void(*func)(Module& M, Function* f))
-{
-    CFunction function;
-    if (sizeof(RETT) == 1) {
-        function.setRetType(Type::getInt8Ty(TheContext));
-    }
-    else if (sizeof(RETT) == 2) {
-        function.setRetType(Type::getInt16Ty(TheContext));
-    }
-    else if (sizeof(RETT) == 4) {
-        function.setRetType(Type::getInt32Ty(TheContext));
-    }
-    else {
-        function.setRetType(Type::getInt64Ty(TheContext));
-    }
-    Function* f = function.create(*TheModule.get(), Function::ExternalLinkage, "tf1");
-
-    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
-    Builder.SetInsertPoint(BB);
-
-    func(*TheModule.get(), f);
-
-    verifyFunction(*f);
-    f->print(errs());
-
-    auto H = TheJIT->addModule(std::move(TheModule));
-
-    InitializeModuleAndPassManager();
-    auto ExprSymbol = TheJIT->findSymbol("tf1");
-    RETT(*FP)() = (RETT(*)())(intptr_t)cantFail(ExprSymbol.getAddress());
-    //printf("function address = %p\n", FP);
-    RETT c = FP();
-    if (sizeof(RETT) == 1) {
-        printf("output: 0x%x'%c'\n", c, c);
-    }
-    else if (sizeof(RETT) == 4 || sizeof(RETT) == 2) {
-        printf("output: 0x%x\n", c);
-    }
-    else {
-        printf("output: 0x%p\n", c);
-    }
-
-    //printf("result: %f, %f\n", gFloat, gDouble);   //result of createBB_external_variables
-
-    TheJIT->removeModule(H);
-}
-
 int main()
 {
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
@@ -714,14 +892,16 @@ int main()
 
     //call_function<char>(createBB_mutable);
 
-    test_create_JIT(*TheModule.get());
+    //test_create_JIT(*TheModule.get());
 
     //call_function<int>(createBB_cast);	
     //call_function<int>(createBB_sext_zext);
     //call_function<char>(createBB_truncate);
-    //call_function<char>(createBB_external_variables);       //IntToPtr, fpext, fptrunc are all here too.
-
-    call_function<char>(createBB_SSA_PHI);      //if control block is here too.
+    //call_function<char>(createBB_external_variables);         //IntToPtr, fpext, fptrunc.
+    //call_function<char>(createBB_SSA_PHI);                    //if control block.  
+    
+    //create_testClass(*TheModule.get());                         //this pointer. class construct, get/set/constrctor
+    create_virtualMethod(*TheModule.get());
 
 
     return 0;
