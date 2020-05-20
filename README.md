@@ -7,6 +7,9 @@ for example: <br>
 2, how to access local varaibles? <br>
 3, how to call exernal functions? <br>
 4, how to use struct? <br>
+5, example of SSA and Phi node  <br>
+6, mutable variable  <br>
+7, cast <br>
 <br>
 All functions are in testllvm.cpp
 <br>
