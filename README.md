@@ -10,6 +10,8 @@ for example: <br>
 5, example of SSA and Phi node  <br>
 6, mutable variable  <br>
 7, cast <br>
+8, object-oriented construct (c++ class, this, constructor, member functions) <br>
+9, virtual functions <br>
 <br>
 All functions are in testllvm.cpp
 <br>
