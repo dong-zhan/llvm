@@ -1,10 +1,12 @@
-//      pending
+//references: 
+//1, https://mapping-high-level-constructs-to-llvm-ir.readthedocs.io/en/latest/object-oriented-constructs/single-inheritance.html
+//2, 
+
+// pending problems/practices:
 // 1, address space cast(pointer cast)
 // 2, use getPointerTo
 
 
-// 1, getelementptr(struct, struct_ptr, index0, index1)
-//  result: struct_ptr + index0
 
 
 #include "stdafx.h"
@@ -236,10 +238,208 @@ void test_call_external_function(void)
 }
 
 //////////////////////////////////////////////////////////////////////////
-//                      create_virtualMethod 
+//                      create_SingleInheritance 
 // 
-void create_virtualMethod(Module& M)
+class SIBase {
+public:
+    int a;
+public:
+    void set(int a) { this->a = a; }
+};
+
+class SIDerived : public SIBase {
+public:
+    int a;
+public:
+    void setAll(int a) { 
+        SIBase::set(a);
+        this->a = a; 
+    }
+};
+
+SIDerived siDerived;
+StructType* sty_SIBase, * sty_SIDerived;
+
+/*
+define void @tc_sib_constructor(%SIBase* %this) {
+entry:
+  %0 = getelementptr %SIBase, %SIBase* %this, i32 0, i32 0
+  store i32 999, i32* %0, align 4
+  ret void
+}
+*/
+void createBB_tc_sib_constructor(Module& M, Function* f)
 {
+    Argument* pArgThis = f->getArg(0);
+
+    std::vector<Value*>indices;
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
+
+    Builder.CreateStore(CConstant::getInt32(M.getContext(), 111), gep);
+
+    Builder.CreateRetVoid();
+}
+
+/*
+define void @tc_sid_constructor(%SIDerived* %this) {
+entry:
+  %0 = getelementptr %SIDerived, %SIDerived* %this, i32 0, i32 1
+  store i32 999, i32* %0, align 4
+  ret void
+}*/
+void createBB_tc_sid_constructor(Module& M, Function* f)
+{
+    Argument* pArgThis = f->getArg(0);
+
+    std::vector<Value*>indices;
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
+
+    Builder.CreateStore(CConstant::getInt32(M.getContext(), 222), gep);
+
+    Builder.CreateRetVoid();
+}
+
+/*
+define void @tc_sib_set(%SIBase* %this, i32 %a) {
+entry:
+  %0 = getelementptr %SIBase, %SIBase* %this, i32 0, i32 0
+  store %SIBase* %this, i32* %0, align 8
+  ret void
+}
+*/
+void createBB_tc_f_tc_sib_set(Module& M, Function* f)
+{
+    Argument* pArgThis = f->getArg(0);
+    Argument* pArgAge = f->getArg(1);
+
+    std::vector<Value*>indices;
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
+
+    Builder.CreateStore(pArgAge, gep);
+
+    Builder.CreateRetVoid();
+}
+
+/*
+define void @tc_sid_setAll(%SIDerived* %this, i32 %a) {
+entry:
+  %0 = bitcast %SIDerived* %this to %SIBase*
+  call void @tc_sib_set(%SIBase* %0, i32 %a)
+  %1 = getelementptr %SIDerived, %SIDerived* %this, i32 0, i32 1
+  store i32 %a, i32* %1, align 4
+  ret void
+}
+*/
+Function* f_tc_sib_set;
+
+void createBB_tc_f_tc_sid_setAll(Module& M, Function* f)
+{
+    Argument* pArgThis = f->getArg(0);
+    Argument* pArgAge = f->getArg(1);
+
+    Value* baseClass = Builder.CreateBitCast(pArgThis, sty_SIBase->getPointerTo(0));
+    std::vector<Value*> args;
+    args.push_back(baseClass);
+    args.push_back(pArgAge);
+    Builder.CreateCall(f_tc_sib_set, args);
+
+    std::vector<Value*>indices;
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
+
+    Builder.CreateStore(pArgAge, gep);
+
+    Builder.CreateRetVoid();
+}
+
+void create_SingleInheritance(Module& M)
+{
+    //
+    // create struct sty_SIBase, sty_SIDerived
+    //
+    CStruct cs_SIBase;
+    cs_SIBase.push<int>(M, 32);
+    sty_SIBase = cs_SIBase.create(M, "SIBase");
+    cs_SIBase.setBody();
+
+    CStruct cs_SIDerived;
+    cs_SIDerived.push<int>(M, 32);
+    cs_SIDerived.push<int>(M, 32);
+    sty_SIDerived = cs_SIDerived.create(M, "SIDerived");
+    cs_SIDerived.setBody();
+
+    //
+    //create 4 function declarations.
+    //
+    CFunction tc_sib_constructor;
+    tc_sib_constructor.pushArg(PointerType::get(sty_SIBase, 0), "this");
+    tc_sib_constructor.setRetType(Type::getVoidTy(M.getContext()));
+    Function* f_tc_sib_constructor = tc_sib_constructor.create(*TheModule.get(), Function::ExternalLinkage, "tc_sib_constructor");
+
+    CFunction tc_sib_set;
+    tc_sib_set.pushArg(PointerType::get(sty_SIBase, 0), "this");
+    tc_sib_set.pushArg(Type::getInt32Ty(TheContext), "a");
+    tc_sib_set.setRetType(Type::getVoidTy(M.getContext()));
+    f_tc_sib_set = tc_sib_set.create(*TheModule.get(), Function::ExternalLinkage, "tc_sib_set");
+
+    CFunction tc_sid_constructor;
+    tc_sid_constructor.pushArg(PointerType::get(sty_SIDerived, 0), "this");
+    tc_sid_constructor.setRetType(Type::getVoidTy(M.getContext()));
+    Function* f_tc_sid_constructor = tc_sid_constructor.create(*TheModule.get(), Function::ExternalLinkage, "tc_sid_constructor");
+
+    CFunction tc_sid_setAll;
+    tc_sid_setAll.pushArg(PointerType::get(sty_SIDerived, 0), "this");
+    tc_sid_setAll.pushArg(Type::getInt32Ty(TheContext), "a");
+    tc_sid_setAll.setRetType(Type::getVoidTy(M.getContext()));
+    Function* f_tc_sid_setAll = tc_sid_setAll.create(*TheModule.get(), Function::ExternalLinkage, "tc_sid_setAll");
+
+    //
+    // create basic block for each function
+    // 
+    create_BB(createBB_tc_sib_constructor, f_tc_sib_constructor);
+    create_BB(createBB_tc_f_tc_sib_set, f_tc_sib_set);
+    create_BB(createBB_tc_sid_constructor, f_tc_sid_constructor);
+    create_BB(createBB_tc_f_tc_sid_setAll, f_tc_sid_setAll);
+
+    //
+    // call set functions
+    //
+    auto H = TheJIT->addModule(std::move(TheModule));
+
+    InitializeModuleAndPassManager();
+
+    // construct
+    auto ExprSymbol = TheJIT->findSymbol("tc_sid_constructor");
+    void(*FP_tc_sid_constructor)(SIDerived*) = (void(*)(SIDerived*))(intptr_t)cantFail(ExprSymbol.getAddress());
+
+    FP_tc_sid_constructor(&siDerived);
+
+    SIBase* base = static_cast<SIBase*>(&siDerived);
+    printf("after construction: base a = %d, derived a = %d\n", base->a, siDerived.a);
+
+    //base seta
+    auto ExprSymbol1 = TheJIT->findSymbol("tc_sib_set");
+    void(*FP_tc_sib_set)(SIBase*, int) = (void(*)(SIBase*, int))(intptr_t)cantFail(ExprSymbol1.getAddress());
+
+    FP_tc_sib_set(base, 1);
+    printf("after base::set : base a = %d, derived a = %d\n", base->a, siDerived.a);
+
+    //derived setAll
+    auto ExprSymbol2 = TheJIT->findSymbol("tc_sid_setAll");
+    void(*FP_tc_sid_setAll)(SIDerived*, int) = (void(*)(SIDerived*, int))(intptr_t)cantFail(ExprSymbol2.getAddress());
+
+    FP_tc_sid_setAll(&siDerived, 2);
+
+    printf("after setAll: base a = %d, derived a = %d\n", base->a, siDerived.a);
+    //
+    TheJIT->removeModule(H);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -900,8 +1100,8 @@ int main()
     //call_function<char>(createBB_external_variables);         //IntToPtr, fpext, fptrunc.
     //call_function<char>(createBB_SSA_PHI);                    //if control block.  
     
-    //create_testClass(*TheModule.get());                         //this pointer. class construct, get/set/constrctor
-    create_virtualMethod(*TheModule.get());
+    //create_testClass(*TheModule.get());                       //this pointer. class construct, get/set/constrctor
+    create_SingleInheritance(*TheModule.get());                 //access base class member functions.
 
 
     return 0;
