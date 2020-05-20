@@ -98,10 +98,6 @@ llvm::GlobalVariable* g;
 
 void createAddBB(Function* f)
 {
-    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
-
-    Builder.SetInsertPoint(BB);
-
     Value* vs[2];
     int idx = 0;
     for (auto& Arg : f->args()) {
@@ -110,9 +106,6 @@ void createAddBB(Function* f)
 
     Value* Inc = Builder.CreateFAdd(vs[0], vs[1]);
     Builder.CreateRet(Inc);
-
-    verifyFunction(*f);
-    f->print(errs());
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -171,6 +164,64 @@ void test_call_external_function(void)
 }
 
 //////////////////////////////////////////////////////////////////////////
+//                      createBB_SSA 
+// 
+/*
+result:
+define i8 @tf1() {
+entry:
+  %0 = load i8, i8* inttoptr (i64 140701517574144 to i8*), align 1
+  %1 = load i8, i8* inttoptr (i64 140701517574145 to i8*), align 1
+  %2 = icmp sgt i8 %0, %1
+  br i1 %2, label %then, label %else
+
+then:                                             ; preds = %entry
+  br label %ifcont
+
+else:                                             ; preds = %entry
+  br label %ifcont
+
+ifcont:                                           ; preds = %else, %then
+  %iftmp = phi i8 [ %0, %then ], [ %1, %else ]
+  ret i8 %iftmp
+}
+*/
+char a = 'a';
+char b = '0';
+void createBB_SSA_PHI(Module& M, Function* f)
+{
+    Value* pa = CBuilder::CreateIntToPtr(Builder, TheContext, &a);
+    Value* pb = CBuilder::CreateIntToPtr(Builder, TheContext, &b);
+
+    Value* va = Builder.CreateLoad(pa);
+    Value* vb = Builder.CreateLoad(pb);
+
+    Value* CondV = Builder.CreateICmpSGT(va, vb);
+
+    BasicBlock* ThenBB = BasicBlock::Create(TheContext, "then", f);
+    BasicBlock* ElseBB = BasicBlock::Create(TheContext, "else", f);
+    BasicBlock* MergeBB = BasicBlock::Create(TheContext, "ifcont", f);
+
+    Builder.CreateCondBr(CondV, ThenBB, ElseBB);
+
+    // then BB
+    Builder.SetInsertPoint(ThenBB);
+    Builder.CreateBr(MergeBB);
+
+    // Emit else block.
+    Builder.SetInsertPoint(ElseBB);
+    Builder.CreateBr(MergeBB);
+
+    // Emit merge block.
+    Builder.SetInsertPoint(MergeBB);
+    PHINode* PN = Builder.CreatePHI(Type::getInt8Ty(TheContext), 2, "iftmp");
+    PN->addIncoming(va, ThenBB);
+    PN->addIncoming(vb, ElseBB);
+
+    Builder.CreateRet(PN);
+}
+
+//////////////////////////////////////////////////////////////////////////
 //                      createBB_external_variables 
 // 
 float gFloat = 111.f;
@@ -178,9 +229,6 @@ double gDouble = 222.;
 
 void createBB_external_variables(Module& M, Function* f)
 {
-    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
-    Builder.SetInsertPoint(BB);
-    
     Value* fp = CBuilder::CreateIntToPtr(Builder, TheContext, &gFloat);
     Value* dp = CBuilder::CreateIntToPtr(Builder, TheContext, &gDouble);
 
@@ -209,9 +257,6 @@ void createBB_external_variables(Module& M, Function* f)
 #endif
 
     Builder.CreateRet(CConstant::getInt8(TheContext, 'X'));
-
-    verifyFunction(*f);
-    f->print(errs());
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -237,10 +282,6 @@ define signext i8 @f() #0 {
 */
 void createBB_truncate(Module& M, Function* f)
 {
-    // start inserting instructions
-    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
-    Builder.SetInsertPoint(BB);
-
     AllocaInst* a32 = CreateEntryBlockAlloca(Type::getInt32Ty(TheContext), f, "");
     AllocaInst* a8 = CreateEntryBlockAlloca(Type::getInt8Ty(TheContext), f, "");
     
@@ -250,9 +291,6 @@ void createBB_truncate(Module& M, Function* f)
     Builder.CreateStore(truncated, a8);
 
     Builder.CreateRet(Builder.CreateLoad(a8));
-
-    verifyFunction(*f);
-    f->print(errs());
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -275,10 +313,6 @@ define i32 @f() #0 {
 */
 void createBB_sext_zext(Module& M, Function* f)
 {
-    // start inserting instructions
-    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
-    Builder.SetInsertPoint(BB);
-
     //NOTE: a8 is a pointer, that points to a stack location, to use its value, load first.
     //this address a8 is not the runtime address?? (it's very different from function address)
     AllocaInst* a8 = CreateEntryBlockAlloca(Type::getInt8Ty(TheContext), f, "");
@@ -288,9 +322,6 @@ void createBB_sext_zext(Module& M, Function* f)
     //sext: 0xff -> 0xffffffff
     //zext: 0xff -> 0x000000ff
     Builder.CreateRet(a8Ext);
-
-    verifyFunction(*f);
-    f->print(errs());
 }
 
 
@@ -327,10 +358,6 @@ void createBB_cast(Module& M, Function* f)
     PointerType* psty = PointerType::get(sty, 0);
     PP(psty);
 
-    // start inserting instructions
-    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
-    Builder.SetInsertPoint(BB);
-
     //malloc 4 bytes, the sizeof the struct
     std::vector<Value*>args;
     args.push_back(CConstant::getInt32(TheContext, 4));
@@ -362,9 +389,6 @@ void createBB_cast(Module& M, Function* f)
     Builder.CreateCall(ffree, args);
 
     Builder.CreateRet(loadedV2);
-
-    verifyFunction(*f);
-    f->print(errs());
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -524,17 +548,10 @@ void createBB_struct(Module&M, Function* f)
     indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
     indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
 
-    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
-    Builder.SetInsertPoint(BB);
-    //Builder.saveIP();
-
     Value* gep = Builder.CreateGEP(gv, indices);        //crashes solve: forgot to setbody()
     Value* loadedV = Builder.CreateLoad(gep, "");
 
     Builder.CreateRet(loadedV);
-
-    verifyFunction(*f);
-    f->print(errs());
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -558,18 +575,11 @@ define signext i8 @f() #0 {
 */
 void createBB_mutable(Module& M, Function* f)
 {
-    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
-    Builder.SetInsertPoint(BB);
-    //Builder.saveIP();
-
     AllocaInst* Alloca = CreateEntryBlockAlloca(Type::getInt8Ty(TheContext), f, "");
 
     Builder.CreateStore(CConstant::getInt8(TheContext, 'Y'), Alloca);
 
     Builder.CreateRet(Builder.CreateLoad(Alloca));
-
-    verifyFunction(*f);
-    f->print(errs());
 }
 
 
@@ -611,10 +621,6 @@ void createBB_string(Module& M, Function* f)
     indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
     indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 2));
 
-    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
-    Builder.SetInsertPoint(BB);
-    //Builder.saveIP();
-
     AllocaInst* Alloca = CreateEntryBlockAlloca(Type::getInt8PtrTy(TheContext), f, "");
 
     Value* gep = Builder.CreateGEP(gv, indices);        //crashes solve: forgot to setbody()
@@ -629,9 +635,6 @@ void createBB_string(Module& M, Function* f)
     Value* loadedV2 = Builder.CreateLoad(gep2, "");
 
     Builder.CreateRet(loadedV2);
-
-    verifyFunction(*f);
-    f->print(errs());
 }
 
 
@@ -653,7 +656,13 @@ void call_function(void(*func)(Module& M, Function* f))
     }
     Function* f = function.create(*TheModule.get(), Function::ExternalLinkage, "tf1");
 
+    BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
+    Builder.SetInsertPoint(BB);
+
     func(*TheModule.get(), f);
+
+    verifyFunction(*f);
+    f->print(errs());
 
     auto H = TheJIT->addModule(std::move(TheModule));
 
@@ -672,7 +681,7 @@ void call_function(void(*func)(Module& M, Function* f))
         printf("output: 0x%p\n", c);
     }
 
-    printf("result: %f, %f\n", gFloat, gDouble);   //result of createBB_external_variables
+    //printf("result: %f, %f\n", gFloat, gDouble);   //result of createBB_external_variables
 
     TheJIT->removeModule(H);
 }
@@ -710,7 +719,10 @@ int main()
     //call_function<int>(createBB_cast);	
     //call_function<int>(createBB_sext_zext);
     //call_function<char>(createBB_truncate);
-    call_function<char>(createBB_external_variables);       //IntToPtr, fpext, fptrunc are all here too.
+    //call_function<char>(createBB_external_variables);       //IntToPtr, fpext, fptrunc are all here too.
+
+    call_function<char>(createBB_SSA_PHI);      //if control block is here too.
+
 
     return 0;
 }
