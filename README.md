@@ -12,6 +12,7 @@ for example: <br>
 7, cast <br>
 8, object-oriented construct (c++ class, this, constructor, member functions) <br>
 9, virtual functions <br>
+10, class inheritance <br>
 <br>
 All functions are in testllvm.cpp
 <br>
