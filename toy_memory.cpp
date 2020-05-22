@@ -23,12 +23,20 @@ namespace toyc
 //									APIs
 //
 llvm::GlobalVariable* new_global_variable(llvm::Module& M, const char* name, llvm::Type* ty, 
-    llvm::GlobalValue::LinkageTypes linkage, int align)
+    llvm::GlobalValue::LinkageTypes linkage, int align, llvm::Constant* initVal)
 {
-    M.getOrInsertGlobal(name, ty);
     llvm::GlobalVariable* g = M.getNamedGlobal(name);
+    if (g) {
+        errs() << "FATAL ERROR(new_global_variable): duplicated names\n";
+        abort();
+        return nullptr;
+    }
+    M.getOrInsertGlobal(name, ty);
+    g = M.getNamedGlobal(name);
     g->setLinkage(linkage);
     g->setAlignment(MaybeAlign(align));
+    g->setInitializer(initVal);
+    //g->setConstant(true);
 
     return g;
 }
@@ -51,8 +59,22 @@ uint64_t getElementOffset(llvm::Module&M, llvm::StructType* st, uint32_t index)
 //
 CGlobalVariables::CGlobalVariables()
 {
-    linkage = GlobalValue::CommonLinkage;
-    align = 0;
+    //TODO: print symbol table.
+/*
+ExternalLinkage 	Externally visible function.
+AvailableExternallyLinkage 	Available for inspection, not emission.
+LinkOnceAnyLinkage 	Keep one copy of function when linking (inline)
+LinkOnceODRLinkage 	Same, but only replaced by something equivalent.
+WeakAnyLinkage 	Keep one copy of named function when linking (weak)
+WeakODRLinkage 	Same, but only replaced by something equivalent.
+AppendingLinkage 	Special purpose, only applies to global arrays.
+InternalLinkage 	Rename collisions when linking (static functions).
+PrivateLinkage 	Like Internal, but omit from symbol table.
+ExternalWeakLinkage 	ExternalWeak linkage description.
+CommonLinkage 	Tentative definitions.
+*/
+    linkage = GlobalValue::PrivateLinkage;
+    align = 1;
 }
 
 void CGlobalVariables::setModule(llvm::Module* M)
@@ -68,9 +90,10 @@ void CGlobalVariables::setAlign(int align)
     this->align = align; 
 }
 
-llvm::GlobalVariable* CGlobalVariables::create(const char* name, llvm::Type* ty)
+//NOTE: create() crashes, if there is any mismatch of data type in ty and initVal.
+llvm::GlobalVariable* CGlobalVariables::create(const char* name, llvm::Type* ty, llvm::Constant* initVal)
 {
-    llvm::GlobalVariable* g = new_global_variable(*M, name, ty, linkage, align);
+    llvm::GlobalVariable* g = new_global_variable(*M, name, ty, linkage, align, initVal);
     map[name] = g;
     return g;
 }
@@ -86,9 +109,9 @@ llvm::GlobalVariable* CGlobalVariables::find(const char* name)
     return map[name];
 }
 
-llvm::GlobalVariable* CGlobalVariables::create_struct_array(const char* name, llvm::StructType* stru, int n)
+llvm::GlobalVariable* CGlobalVariables::create_struct_array(const char* name, llvm::StructType* stru, int n, llvm::Constant* initVal)
 {
-    return create(name, llvm::ArrayType::get(stru, n));
+    return create(name, llvm::ArrayType::get(stru, n), initVal);
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -224,5 +247,4 @@ i64* i64
 
 
 };      //end of namespace
-
 

@@ -12,6 +12,11 @@
 // 5, test_create_JIT??
 // 6, 
 
+// bug:
+// 1, happens when executing functions in JIT, Exception thrown at 0x000002E576B829A0 in testvc.exe: 0xC0000005: Access violation executing location 0x000002E576B829A0.
+//    solve: check the code before the JIT passes -> gVars.setLinkage(GlobalValue::LinkageTypes::PrivateLinkage);
+// 2, 
+
 
 #include "stdafx.h"
 
@@ -96,6 +101,7 @@ void create_BB(void(*func)(Module&, Function*), Function* f)
 
     verifyFunction(*f);
     f->print(errs());
+    //dump_module_globals(*TheModule.get());
 }
 
 template<class RETT = int>
@@ -138,19 +144,26 @@ void call_function(void(*func)(Module&, Function*), Function* inputF = nullptr)
     InitializeModuleAndPassManager();
     auto ExprSymbol = TheJIT->findSymbol("tf1");
     RETT(*FP)() = (RETT(*)())(intptr_t)cantFail(ExprSymbol.getAddress());
-    //printf("function address = %p\n", FP);
-    RETT c = FP();
-    if (sizeof(RETT) == 1) {
-        printf("output: 0x%x'%c'\n", c, c);
-    }
-    else if (sizeof(RETT) == 4 || sizeof(RETT) == 2) {
-        printf("output: 0x%x\n", c);
+
+    if (typeid(RETT) == typeid(char*)) {
+        RETT s = FP();
+        printf("output: %s\n", s);
     }
     else {
-        printf("output: 0x%p\n", c);
+        //printf("function address = %p\n", FP);
+        RETT c = FP();
+        if (sizeof(RETT) == 1) {
+            printf("output: 0x%x'%c'\n", c, c);
+        }
+        else if (sizeof(RETT) == 4 || sizeof(RETT) == 2) {
+            printf("output: 0x%x\n", c);
+        }
+        else {
+            printf("output: 0x%p\n", c);
+        }
     }
 
-    printf("result: %f, %f\n", gFloat, gDouble);   //result of createBB_external_variables
+    //printf("result: %f, %f\n", gFloat, gDouble);   //result of createBB_external_variables
 
     TheJIT->removeModule(H);
 }
@@ -280,10 +293,10 @@ StructType* create_vtable_type(Module& M)
     return ty;
 }
 
-GlobalVariable* create_vtable_node(Module& M, StructType* sty_vtable, GlobalVariable*parent_node, GlobalVariable* classname)
+GlobalVariable* create_vtable_node(Module& M, const char* name, StructType* sty_vtable, GlobalVariable*parent_node, GlobalVariable* classname)
 {
     CGlobalVariables gVars;
-    gVars.setLinkage(GlobalValue::LinkageTypes::PrivateLinkage);
+    //gVars.setLinkage(GlobalValue::LinkageTypes::PrivateLinkage);
     gVars.setModule(&M);
 
     CConstantStructValue csv;
@@ -297,7 +310,7 @@ GlobalVariable* create_vtable_node(Module& M, StructType* sty_vtable, GlobalVari
 
     llvm::Constant* sv = csv.create(sty_vtable);
 
-    GlobalVariable* g = gVars.create("vtable", sty_vtable, sv);
+    GlobalVariable* g = gVars.create(name, sty_vtable, sv);
     g->setConstant(true);
     return g;
 }
@@ -312,10 +325,10 @@ StructType* create_object_type(Module& M, StructType* ty_vtable)
     return ty;
 }
 
-GlobalVariable* create_object_node(Module& M, StructType* sty_object, GlobalVariable* vtable_node)
+GlobalVariable* create_object_node(Module& M, const char* name, StructType* sty_object, GlobalVariable* vtable_node)
 {
     CGlobalVariables gVars;
-    gVars.setLinkage(GlobalValue::LinkageTypes::PrivateLinkage);
+    //gVars.setLinkage(GlobalValue::LinkageTypes::PrivateLinkage);
     gVars.setModule(&M);
 
     CConstantStructValue csv;
@@ -323,9 +336,37 @@ GlobalVariable* create_object_node(Module& M, StructType* sty_object, GlobalVari
 
     llvm::Constant* sv = csv.create(sty_object);
 
-    GlobalVariable* g = gVars.create("object", sty_object, sv);
+    GlobalVariable* g = gVars.create(name, sty_object, sv);
     g->setConstant(true);
     return g;
+}
+
+GlobalVariable* baseObject, * derivedObject, * base2Object;
+StructType* ty_vtable;
+StructType* ty_object;
+GlobalVariable* baseClassName;
+
+void createBB_print_typeinfo(Module& M, Function* f)
+{
+    GlobalVariable* testObject = base2Object;     //baseObject, base2Object, derivedObject
+
+    std::vector<Value*>indices;
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    Value* gep = Builder.CreateGEP(baseObject->getType()->getPointerElementType(), testObject, indices);        //crashes solve: forgot to setbody()    
+
+    Value* vtablePointer = Builder.CreateLoad(gep);
+    PP(vtablePointer);      //vtablePointer:  %0 = load %vtable_type*, %vtable_type** getelementptr inbounds (%object_type, %object_type* @object_base, i32 0, i32 0), align 8
+
+    indices.clear();
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    Value* gep2 = Builder.CreateGEP(ty_vtable, vtablePointer, indices);
+
+    Value* classname = Builder.CreateLoad(gep2); 
+    PP(classname);
+
+    Builder.CreateRet(classname);
 }
 
 
@@ -337,54 +378,46 @@ void create_dynamic_cast(Module& M)
     //
     // create vtable type and vtable tree
     //
-    StructType* ty_vtable = create_vtable_type(M);
-    //PP(ty_vtable);
+    ty_vtable = create_vtable_type(M);
 
     // create base class node
-    GlobalVariable* baseClassName = gVars.create_array<char>("base", strlen("base"),
+    baseClassName = gVars.create_array<char>("base", strlen("base") + 1,
         ConstantDataArray::getString(M.getContext(), "base"));
-    //PP(baseClassName);
 
-    GlobalVariable* baseClassNode = create_vtable_node(M, ty_vtable, nullptr, baseClassName);
-    //PP(baseClassNode);
+    GlobalVariable* baseClassNode = create_vtable_node(M, "vtable_base", ty_vtable, nullptr, baseClassName);
 
     // create derived class node
-    GlobalVariable* derivedClassName = gVars.create_array<char>("derived", strlen("derived"),
+    GlobalVariable* derivedClassName = gVars.create_array<char>("derived", strlen("derived") + 1,
         ConstantDataArray::getString(M.getContext(), "derived"));
 
-    GlobalVariable* derivedClassNode = create_vtable_node(M, ty_vtable, baseClassNode, derivedClassName);
-    //PP(derivedClassNode);
+    GlobalVariable* derivedClassNode = create_vtable_node(M, "vtable_derived", ty_vtable, baseClassNode, derivedClassName);
 
     // create base2 class node
-    GlobalVariable* base2ClassName = gVars.create_array<char>("base2", strlen("base2"),
+    GlobalVariable* base2ClassName = gVars.create_array<char>("base2", strlen("base2") + 1,
         ConstantDataArray::getString(M.getContext(), "base2"));
-    //PP(baseClassName);
 
-    GlobalVariable* base2ClassNode = create_vtable_node(M, ty_vtable, nullptr, base2ClassName);
-    //PP(base2ClassNode);
+    GlobalVariable* base2ClassNode = create_vtable_node(M, "vtable_base2", ty_vtable, nullptr, base2ClassName);
 
     //
     // create object type and a test base/derived object.
     //
-    StructType* ty_object = create_object_type(M, ty_vtable);
-    //PP(ty_object);
+    ty_object = create_object_type(M, ty_vtable);
 
     // create base object
-    GlobalVariable* base = create_object_node(M, ty_object, baseClassNode);
-    PP(base);
+    baseObject = create_object_node(M, "object_base", ty_object, baseClassNode);
 
     // create derived object
-    GlobalVariable* derived = create_object_node(M, ty_object, derivedClassNode);
-    PP(derived);
+    derivedObject = create_object_node(M, "object_derived", ty_object, derivedClassNode);
 
     // create base2 object
-    GlobalVariable* base2 = create_object_node(M, ty_object, base2ClassNode);
-    PP(base2);
+    base2Object = create_object_node(M, "object_base2", ty_object, base2ClassNode);
 
     //
     // create a function, that prints typeinfo
     //
-
+    CFunction print_typeinfo;
+    print_typeinfo.setRetType(Type::getInt8PtrTy(M.getContext()));
+    Function* f_print_typeinfo = print_typeinfo.create(*TheModule.get(), Function::ExternalLinkage, "print_typeinfo");
 
     //
     // create a function, that checks if an object is of type base or derived.
@@ -393,6 +426,30 @@ void create_dynamic_cast(Module& M)
     //
     // dynamic_cast
     //
+
+    //
+    // create basic block for each function
+    // 
+    create_BB(createBB_print_typeinfo, f_print_typeinfo);
+
+
+
+    //
+    // call set functions
+    //
+    auto H = TheJIT->addModule(std::move(TheModule));
+
+    InitializeModuleAndPassManager();
+
+    // print typeinfo
+    auto ExprSymbol = TheJIT->findSymbol("print_typeinfo");
+    char*(*FP_print_typeinfo)() = (char* (*)())(intptr_t)cantFail(ExprSymbol.getAddress());
+
+    char* typeinfo = FP_print_typeinfo();
+    printf("typeinfo = %s\n", typeinfo);
+
+    //
+    TheJIT->removeModule(H);
 
 }
 
@@ -1124,7 +1181,7 @@ void createBB_struct(Module&M, Function* f)
     cs.push<double>(M);
     cs.setBody();
 
-    errs() << "struct_type:"; struct_type->print(errs()); errs() << "\n";
+    PP(struct_type);        //struct_type:%cs = type { i32, i8, float, double }
 
     // create constant value for the struct
     CConstantStructValue csv;
@@ -1135,7 +1192,7 @@ void createBB_struct(Module&M, Function* f)
     csv.push<double>(*TheModule.get(), 222., 32);
 
     Constant* ccc = csv.create(struct_type);
-    errs() << "ccc:"; ccc->print(errs()); errs() << "\n";
+    PP(ccc);                //ccc:%cs { i32 12345, i8 88, float 1.110000e+02, double 2.220000e+02 }
 
     // create variable(sturct)
     CGlobalVariables g;
@@ -1144,17 +1201,19 @@ void createBB_struct(Module&M, Function* f)
     g.setModule(TheModule.get());
     llvm::GlobalVariable* gv = g.create("gv", struct_type, ccc);
 
-    errs() << "gv:"; gv->print(errs()); errs() << "\n";
+    PP(gv);                 //gv:@gv = private global %cs { i32 12345, i8 88, float 1.110000e+02, double 2.220000e+02 }, align 1
 
     std::vector<Value*>indices;
     indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
     indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
 
-    //gv:@gv = private global %cs { i32 12345, i8 88, float 1.110000e+02, double 2.220000e+02 }, align 1
     Value* gep = Builder.CreateGEP(gv, indices);        //crashes solve: forgot to setbody()
-    Value* loadedV = Builder.CreateLoad(gep, "");
+    PP(gep);                //gep:i8* getelementptr inbounds (%cs, %cs* @gv, i32 0, i32 1)
 
-    Builder.CreateRet(loadedV);
+    Value* loadedV = Builder.CreateLoad(gep, "");
+    PP(loadedV);            //loadedV:  %0 = load i8, i8* getelementptr inbounds (%cs, %cs* @gv, i32 0, i32 1), align 1
+
+    Builder.CreateRet(loadedV);         //'X'
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1214,11 +1273,14 @@ void createBB_string(Module& M, Function* f)
     // create string
     CGlobalVariables g;
     g.setAlign(1);
-    g.setLinkage(GlobalValue::PrivateLinkage);
+    //g.setLinkage(GlobalValue::PrivateLinkage);
     g.setModule(TheModule.get());
-    Constant* cs = ConstantDataArray::getString(TheContext, "test", true);
+    Constant* cs = ConstantDataArray::getString(TheContext, "##Hello World", true);
+    PP(cs);         //cs:[14 x i8] c"##Hello World\00"
+
     //Constant* cs = Builder.CreateGlobalStringPtr("test", "str");
-    llvm::GlobalVariable* gv = g.create_array<char>("str", 5, cs);
+    llvm::GlobalVariable* gv = g.create_array<char>("str", 20, cs);
+    PP(gv);         //gv:@str = private global [20 x i8] c"##Hello World\00", align 1
 
     std::vector<Value*>indices;
     indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
@@ -1227,17 +1289,30 @@ void createBB_string(Module& M, Function* f)
     AllocaInst* Alloca = CreateEntryBlockAlloca(Type::getInt8PtrTy(TheContext), f, "");
 
     Value* gep = Builder.CreateGEP(gv, indices);        //crashes solve: forgot to setbody()
-    //PP(gep);
+    PP(gep);        //gep:i8* getelementptr inbounds ([20 x i8], [20 x i8]* @str, i32 0, i32 2)
     
     Builder.CreateStore(gep, Alloca);
+    PP(Alloca);     //i8*
 
     Value* loadedV = Builder.CreateLoad(Alloca, "");
+    PP(loadedV);    //loadedV:  %1 = load i8*, i8** %0, align 8
 
+#if 1       //return string, note both gep and loadedV can be returned.
+    Builder.CreateRet(gv);        // ret [20 x i8]* @str        --> output: ##Hello World
+    //Builder.CreateRet(cs);        // ret [14 x i8] c"##Hello World\00"      --> crashes
+    //Builder.CreateRet(gep);         // ret i8* getelementptr inbounds ([20 x i8], [20 x i8]* @str, i32 0, i32 2)  --> output: Hello World
+    //Builder.CreateRet(loadedV);         // ret i8* %1    --> output: Hello World
+    //Builder.CreateRet(Alloca);         // ret i8** %0           --> wrong but no crashes
+
+#else       //return char
     Value* gep2 = Builder.CreateGEP(loadedV, ConstantInt::get(Type::getInt32Ty(TheContext), 0));        //crashes solve: forgot to setbody()
+    PP(gep2);       //%2 = getelementptr i8, i8* %1, i32 0
 
     Value* loadedV2 = Builder.CreateLoad(gep2, "");
+    PP(loadedV2);   //%3 = load i8, i8* %2, align 1
 
-    Builder.CreateRet(loadedV2);
+    Builder.CreateRet(loadedV2);        //returns 's'
+#endif
 }
 
 void print_cplusplus(void)
@@ -1284,7 +1359,7 @@ int main(int argc, char** argv)
     //test_toy_memory_packed(M);
     //test_global_variables();        //basic function calls
     //test_call_external_function();
-    //call_function<char>(createBB_string);
+    //call_function<char*>(createBB_string);
     //call_function<char>(createBB_struct);
     //test_call_external_variadic();
     //test_conversion(*TheModule.get());
