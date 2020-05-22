@@ -1,4 +1,4 @@
-# llvm
+# llvm helper classes and functions
 
 this project is for practice in IR <br>
 and hopefully, the functions in it can be handy for someone who actually is creating either a dynamic compiler(JIT) or just a compiler<br><br>
