@@ -1,15 +1,23 @@
 //references: 
 //1, https://mapping-high-level-constructs-to-llvm-ir.readthedocs.io/en/latest/object-oriented-constructs/single-inheritance.html
-//2, 
+//2, https://llvm.org/docs/tutorial/MyFirstLanguageFrontend/index.html
+//3, 
 
 // pending problems/practices:
 // 1, address space cast(pointer cast)
-// 2, use getPointerTo
-
-
+// 2, put getPointerTo/getPointerElementType in those helper classes.
+// 3, create_boxing_unboxing??
+// 4, generate "GENERAL" IR with clang, then use the generated IR and user created IR to create new program.
+//      then, this is GENERAL IR is like functions in library, actually they can be smaller than a function.
+// 5, test_create_JIT??
+// 6, 
 
 
 #include "stdafx.h"
+
+#include <iostream>
+
+#include "llvm/IRReader/IRReader.h"
 
 
 #include "toy_constant.h"
@@ -235,6 +243,175 @@ void test_call_external_function(void)
     errs() << "\n";
 
     TheJIT->removeModule(H);
+}
+
+//////////////////////////////////////////////////////////////////////////
+//                      create_dynamic_cast 
+// 
+/*
+struct vtable_type{
+    struct vtable_type* parent;
+    char* classname;
+};
+
+class Base{
+    vtable_type* vtable;
+};
+class Derived : Base{
+    vtable_type* vtable;
+};
+class Base2{
+    vtable_type* vtable;
+};
+
+bool isObjectDerived();  //dynamic_cast
+
+
+
+*/
+
+StructType* create_vtable_type(Module& M)
+{
+    CStruct cs;
+    StructType* ty = cs.create(M, "vtable_type");
+    cs.push_struct_pointer(M, ty);              
+    cs.push_scalar_pointer<char>(M);            
+    cs.setBody();
+    return ty;
+}
+
+GlobalVariable* create_vtable_node(Module& M, StructType* sty_vtable, GlobalVariable*parent_node, GlobalVariable* classname)
+{
+    CGlobalVariables gVars;
+    gVars.setLinkage(GlobalValue::LinkageTypes::PrivateLinkage);
+    gVars.setModule(&M);
+
+    CConstantStructValue csv;
+    if (parent_node) {
+        csv.push(M, parent_node);
+    }
+    else {
+        csv.push_null_pointer(M, sty_vtable);
+    }
+    csv.push(M, classname);
+
+    llvm::Constant* sv = csv.create(sty_vtable);
+
+    GlobalVariable* g = gVars.create("vtable", sty_vtable, sv);
+    g->setConstant(true);
+    return g;
+}
+
+
+StructType* create_object_type(Module& M, StructType* ty_vtable)
+{
+    CStruct cs;
+    StructType* ty = cs.create(M, "object_type");
+    cs.push_struct_pointer(M, ty_vtable);      
+    cs.setBody();
+    return ty;
+}
+
+GlobalVariable* create_object_node(Module& M, StructType* sty_object, GlobalVariable* vtable_node)
+{
+    CGlobalVariables gVars;
+    gVars.setLinkage(GlobalValue::LinkageTypes::PrivateLinkage);
+    gVars.setModule(&M);
+
+    CConstantStructValue csv;
+    csv.push(M, vtable_node);
+
+    llvm::Constant* sv = csv.create(sty_object);
+
+    GlobalVariable* g = gVars.create("object", sty_object, sv);
+    g->setConstant(true);
+    return g;
+}
+
+
+void create_dynamic_cast(Module& M)
+{
+    CGlobalVariables gVars;
+    gVars.setModule(&M);
+
+    //
+    // create vtable type and vtable tree
+    //
+    StructType* ty_vtable = create_vtable_type(M);
+    //PP(ty_vtable);
+
+    // create base class node
+    GlobalVariable* baseClassName = gVars.create_array<char>("base", strlen("base"),
+        ConstantDataArray::getString(M.getContext(), "base"));
+    //PP(baseClassName);
+
+    GlobalVariable* baseClassNode = create_vtable_node(M, ty_vtable, nullptr, baseClassName);
+    //PP(baseClassNode);
+
+    // create derived class node
+    GlobalVariable* derivedClassName = gVars.create_array<char>("derived", strlen("derived"),
+        ConstantDataArray::getString(M.getContext(), "derived"));
+
+    GlobalVariable* derivedClassNode = create_vtable_node(M, ty_vtable, baseClassNode, derivedClassName);
+    //PP(derivedClassNode);
+
+    // create base2 class node
+    GlobalVariable* base2ClassName = gVars.create_array<char>("base2", strlen("base2"),
+        ConstantDataArray::getString(M.getContext(), "base2"));
+    //PP(baseClassName);
+
+    GlobalVariable* base2ClassNode = create_vtable_node(M, ty_vtable, nullptr, base2ClassName);
+    //PP(base2ClassNode);
+
+    //
+    // create object type and a test base/derived object.
+    //
+    StructType* ty_object = create_object_type(M, ty_vtable);
+    //PP(ty_object);
+
+    // create base object
+    GlobalVariable* base = create_object_node(M, ty_object, baseClassNode);
+    PP(base);
+
+    // create derived object
+    GlobalVariable* derived = create_object_node(M, ty_object, derivedClassNode);
+    PP(derived);
+
+    // create base2 object
+    GlobalVariable* base2 = create_object_node(M, ty_object, base2ClassNode);
+    PP(base2);
+
+    //
+    // create a function, that prints typeinfo
+    //
+
+
+    //
+    // create a function, that checks if an object is of type base or derived.
+    //
+
+    //
+    // dynamic_cast
+    //
+
+}
+
+//////////////////////////////////////////////////////////////////////////
+//                      create_boxing_unboxing 
+// 
+template<class T>
+class Box
+{
+private:
+    T* val;
+public:
+    Box(const T& val){ this->val = &val; }  
+    T Unbox(){ return *val; }
+};
+
+void create_boxing_unboxing(Module& M)
+{
+
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1063,10 +1240,33 @@ void createBB_string(Module& M, Function* f)
     Builder.CreateRet(loadedV2);
 }
 
+void print_cplusplus(void)
+{
+    switch (__cplusplus) {
+    case 1L:
+        cout << "C++ pre-C++98\n";
+        break;
+    case 199711L:
+        cout << "C++98\n";
+        break;
+    case 201103L:
+        cout << "C++11\n";
+        break;
+    case 201402L:
+        cout << "C++14\n";
+        break;
+    case 201703L:
+        cout << "C++17\n";
+        break;
+    }
+}
 
-int main()
+
+int main(int argc, char** argv)
 {
     _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
+
+    print_cplusplus();
 
     InitializeNativeTarget();
     InitializeNativeTargetAsmPrinter();
@@ -1101,8 +1301,40 @@ int main()
     //call_function<char>(createBB_SSA_PHI);                    //if control block.  
     
     //create_testClass(*TheModule.get());                       //this pointer. class construct, get/set/constrctor
-    create_SingleInheritance(*TheModule.get());                 //access base class member functions.
+    //create_SingleInheritance(*TheModule.get());                 //access base class member functions.
+    //create_boxing_unboxing(*TheModule.get());
+    
+    create_dynamic_cast(*TheModule.get());
 
+
+
+#if 0           //uncomment this to parse the hand-written IL file and execute the main()
+    SMDiagnostic Err;
+    if (argc >= 2) {
+        TheModule = parseIRFile(argv[1], Err, TheContext);
+    }
+    else {
+        TheModule = parseIRFile("g:\\llvm\\test\\test.ll", Err, TheContext);
+    }
+
+    TheModule.get()->print(errs(), nullptr);
+
+    auto H = TheJIT->addModule(std::move(TheModule));
+
+    InitializeModuleAndPassManager();
+    auto ExprSymbol = TheJIT->findSymbol("main");
+    if (ExprSymbol) {
+        errs() << "\n\nexecuting main()\n";
+        int(*main_func)(...) = (int(*)(...))(intptr_t)cantFail(ExprSymbol.getAddress());
+        int ret = main_func(2);
+        printf("main_func returns %d\n", ret);
+    }
+    else {
+        errs() << "main not found\n";
+    }    
+
+    TheJIT->removeModule(H);
+#endif
 
     return 0;
 }
