@@ -1,7 +1,7 @@
 # llvm
 
 this project is for practice in IR <br>
-and hopefully, the functions in it can be handy for someone who actually is creating a dynamic compiler(JIT). <br><br>
+and hopefully, the functions in it can be handy for someone who actually is creating either a dynamic compiler(JIT) or just a compiler<br><br>
 for example: <br>
 1, how to create global variables? <br>
 2, how to access local varaibles? <br>
