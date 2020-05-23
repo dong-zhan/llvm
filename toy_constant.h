@@ -7,6 +7,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/IR/GlobalValue.h"
 //#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Constants.h"
 
 namespace toyc
 {
@@ -30,6 +31,49 @@ public:
 	static inline llvm::Constant* getInt64(llvm::LLVMContext& Context, long long c) {
 		return llvm::Constant::getIntegerValue(llvm::Type::getInt64Ty(Context), llvm::APInt(64, c));
 	}
+
+	static inline llvm::Constant* get_string(llvm::Module& M, const char* str, bool addNull = true) {
+		return llvm::ConstantDataArray::getString(M.getContext(), str, addNull);
+	}
+
+
+	///////////////////////////////////////////////////////////////////////
+	//				bool
+	//
+	static inline llvm::Constant* getBool(llvm::LLVMContext& Context, bool b) {
+		return llvm::Constant::getIntegerValue(llvm::Type::getInt1Ty(Context), llvm::APInt(1, b));
+	}
+
+
+	///////////////////////////////////////////////////////////////////////
+	//				float point
+	//
+	static inline llvm::Constant* getFloat(llvm::LLVMContext& Context, float f) {
+		return llvm::ConstantFP::get(llvm::Type::getFloatTy(Context), llvm::APFloat(f));
+	}
+	static inline llvm::Constant* getDouble(llvm::LLVMContext& Context, double f) {
+		return llvm::ConstantFP::get(llvm::Type::getDoubleTy(Context), llvm::APFloat(f));
+	}
+
+	///////////////////////////////////////////////////////////////////////
+	//				pointer
+	//
+	static inline llvm::ConstantInt* getPointer(llvm::LLVMContext& Context, void* p) {
+		return llvm::ConstantInt::get(Context, llvm::APInt(64, reinterpret_cast<uint64_t>(p)));
+	}
+
+
+	//static inline llvm::ConstantPointerNullVal();
+
+/*
+	static inline llvm::PointerType* getInt32Ptr(llvm::LLVMContext& Context, int *c) {
+		return llvm::PointerType::get(llvm::Type::getInt32Ty(Context), 0);
+	}
+*/
+
+	//static inline llvm::Constant* getFloatPtr(llvm::LLVMContext& Context, float* fp) {
+	//	return llvm::ConstantFP::get(llvm::Type::getInt64Ty(Context), llvm::APInt(64, c));
+	//}
 };
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -42,6 +86,27 @@ protected:
 	llvm::Constant* stru;
 
 public:
+	//push executable space variable, so, push_pointer() can be used only in JIT, use push(GlobalVariable) to push module space variable.
+	void push_pointer(llvm::Module& M, void* p) {
+		members.push_back(CConstant::getPointer(M.getContext(), p));
+	}
+	//push module space variable.
+	void push(llvm::Module& M, llvm::GlobalVariable* g) {
+		members.push_back(g);
+	}
+	//push string
+	void pushExpr(llvm::Module& M, llvm::Type* ty, std::vector<llvm::Value*>&indices, llvm::GlobalVariable* g) {
+		members.push_back(llvm::ConstantExpr::getGetElementPtr(ty, g, indices));
+	}
+	llvm::Constant* get_string(llvm::Module& M, const char* str, bool addNull = true) {
+		return llvm::ConstantDataArray::getString(M.getContext(), str, addNull);
+	}
+	llvm::Constant* get_null_initializer(llvm::Type* ty) {
+		return llvm::Constant::getNullValue(ty);
+	}
+	void push_null_pointer(llvm::Module& M, llvm::Type*ty) {
+		members.push_back(llvm::ConstantPointerNull::get(llvm::PointerType::get(ty, 0)));
+	}
 	template<typename T>
 	void push(llvm::Module& M, const T& value, int bits = 8) {
 		llvm::Type* ty = llvm::Type::getScalarTy<T>(M.getContext());

@@ -89,7 +89,7 @@ public:
 //									APIs
 //
 llvm::GlobalVariable* new_global_variable(llvm::Module& M, const char* name, llvm::Type* ty, 
-	llvm::GlobalValue::LinkageTypes linkage = llvm::GlobalValue::CommonLinkage, int align = 0);
+	llvm::GlobalValue::LinkageTypes linkage = llvm::GlobalValue::CommonLinkage, int align = 0, llvm::Constant* initVal = nullptr);
 void delete_global_variable(llvm::Module& M, llvm::GlobalVariable*g);
 
 uint64_t getElementOffset(llvm::Module&mod, llvm::StructType* st, uint32_t index);
@@ -112,19 +112,28 @@ public:
 	void setAlign(int align);
 
 public:
+	static llvm::GlobalVariable* create_string(llvm::Module&M, const char* name, const char* str,
+		llvm::GlobalValue::LinkageTypes linkage = llvm::GlobalValue::PrivateLinkage, llvm::Constant* initVal = nullptr) {
+		llvm::Constant* cs = llvm::ConstantDataArray::getString(M.getContext(), str, true);
+		llvm::GlobalVariable* g = new_global_variable(M, name,
+			llvm::ArrayType::get(llvm::Type::getScalarTy<char>(M.getContext()), strlen(str)+1),
+			linkage, 1, cs);
+		return g;
+	}
+	//struct is not created with create<struct_type>(), but, with CStruct above first, then use the created type.
 	template<class T>
-	llvm::GlobalVariable* create(const char* name){
-		return create(name, llvm::Type::getScalarTy<T>(M->getContext()));
+	llvm::GlobalVariable* create(const char* name, llvm::Constant* initVal = nullptr){
+		return create(name, llvm::Type::getScalarTy<T>(M->getContext()), initVal);
 	}
 
-	llvm::GlobalVariable* create(const char* name, llvm::Type* ty);
+	llvm::GlobalVariable* create(const char* name, llvm::Type* ty, llvm::Constant* initVal = nullptr);
 
 	template<class T>
-	llvm::GlobalVariable* create_array(const char* name, int n) {
-		return create(name, llvm::ArrayType::get(llvm::Type::getScalarTy<T>(M->getContext()), n));
+	llvm::GlobalVariable* create_array(const char* name, int n, llvm::Constant* initVal = nullptr) {
+		return create(name, llvm::ArrayType::get(llvm::Type::getScalarTy<T>(M->getContext()), n), initVal);
 	}
 
-	llvm::GlobalVariable* create_struct_array(const char* name, llvm::StructType* stru, int n);
+	llvm::GlobalVariable* create_struct_array(const char* name, llvm::StructType* stru, int n, llvm::Constant* initVal = nullptr);
 
 
 	void destroy(const char* name);

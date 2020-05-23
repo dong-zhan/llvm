@@ -6,19 +6,37 @@ using namespace llvm;
 using namespace std;
 
 
+void dump_module_structs(llvm::Module& m)
+{
+	errs() << "Module:" << m.getName() << "'s structs:\n";
 
+	vector <StructType*> list = m.getIdentifiedStructTypes();
 
-void dump_module_globals(llvm::Module& m)
+	for (vector <StructType*> ::iterator it = list.begin(); it != list.end(); ++it) {
+		(*it)->print(errs()); 
+		errs() << "\n";
+	}
+}
+
+void dump_module_globals(llvm::Module& m, bool llvmPrint)
 {
 	errs() << "Module:" << m.getName() << "'s globals:\n";
 
 	llvm::Module::GlobalListType& gl = m.getGlobalList();
-	for (auto& g : gl) {
-		string type_str;
-		raw_string_ostream rso(type_str);
-		g.getType()->print(rso);
+	for (GlobalVariable& g : gl) {
 
-		errs() << rso.str() << " " << g.getName() << "\n";
+		if (llvmPrint) {
+			g.print(errs());
+			errs() << "\n";
+		}
+		else {
+			string type_str;
+			raw_string_ostream rso(type_str);
+			PointerType* ty = g.getType();
+			ty->print(rso);
+
+			errs() << rso.str() << " " << g.getName() << "\n";
+		}
 	}
 }
 

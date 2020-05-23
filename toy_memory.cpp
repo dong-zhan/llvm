@@ -73,7 +73,7 @@ PrivateLinkage 	Like Internal, but omit from symbol table.
 ExternalWeakLinkage 	ExternalWeak linkage description.
 CommonLinkage 	Tentative definitions.
 */
-    linkage = GlobalValue::PrivateLinkage;
+    linkage = GlobalValue::InternalLinkage;
     align = 1;
 }
 

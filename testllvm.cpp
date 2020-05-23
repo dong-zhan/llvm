@@ -22,6 +22,8 @@
 
 #include <iostream>
 
+#include <stdarg.h>
+
 #include "llvm/IRReader/IRReader.h"
 
 
@@ -51,6 +53,10 @@ using namespace std;
 
 #define PP(x) errs() << #x":"; x->print(errs()); errs() << "\n";
 
+struct GFunctions {
+    FunctionCallee printf;
+}gFunctions;
+
 FunctionCallee declare_malloc(void)
 {
     std::vector<Type*> args;
@@ -71,6 +77,58 @@ FunctionCallee declare_free(void)
     return func;
 }
 
+FunctionCallee declare_printf(void)
+{
+#if 0
+    Type* args = PointerType::get(Type::getInt8Ty(TheContext), 0);
+    Type* retType = IntegerType::getInt8PtrTy(TheContext);
+#else
+    std::vector<Type*> args;
+    args.push_back(Type::getInt8PtrTy(TheContext));
+    Type* retType = Builder.getInt32Ty();
+#endif
+
+    FunctionType* printfType = FunctionType::get(retType, args, true);
+    FunctionCallee func = TheModule.get()->getOrInsertFunction("printf", printfType);
+
+    gFunctions.printf = func;
+
+    return func;
+}
+
+void call_printf(Module&M, const char*format, int n, ...)
+{
+    CGlobalVariables gVars;
+    gVars.setModule(&M);
+
+    static int i = 0;
+    char name[32];
+    sprintf(name, "printfn%d", i++);
+
+    GlobalVariable* g = CGlobalVariables::create_string(M, name, format);
+
+    std::vector<Value*> call_args;
+    call_args.push_back(g);
+
+    va_list vl;
+    va_start(vl, n);
+
+    for (int i = 0; i < n; i++)
+    {
+        Value* val = va_arg(vl, Value*);
+        call_args.push_back(val);
+    }
+
+    va_end(vl);
+
+    Builder.CreateCall(gFunctions.printf, call_args, "printf");
+}
+
+inline void make_arg_indices(std::vector<Value*>&indices, int i, int j)
+{
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), i));
+    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), j));
+}
 
 static void InitializeModuleAndPassManager() {
     // Open a new module.
@@ -92,7 +150,8 @@ static void InitializeModuleAndPassManager() {
     TheFPM->doInitialization();
 }
 
-void create_BB(void(*func)(Module&, Function*), Function* f)
+void create_BB(void(*func)(Module&, Function*), Function* f, bool bPrintFunction = true, 
+    bool bPrintStructs = false, bool bPrintsGlobals = false)
 {
     BasicBlock* BB = BasicBlock::Create(TheContext, "entry", f);
     Builder.SetInsertPoint(BB);
@@ -100,8 +159,11 @@ void create_BB(void(*func)(Module&, Function*), Function* f)
     func(*TheModule.get(), f);
 
     verifyFunction(*f);
-    f->print(errs());
-    //dump_module_globals(*TheModule.get());
+    if (bPrintFunction) {
+        f->print(errs());
+    }
+    if(bPrintStructs)dump_module_structs(*TheModule.get());
+    if (bPrintsGlobals)dump_module_globals(*TheModule.get(), true);
 }
 
 template<class RETT = int>
@@ -306,7 +368,10 @@ GlobalVariable* create_vtable_node(Module& M, const char* name, StructType* sty_
     else {
         csv.push_null_pointer(M, sty_vtable);
     }
-    csv.push(M, classname);
+
+    std::vector<Value*>indices;
+    make_arg_indices(indices, 0, 0);
+    csv.pushExpr(M, classname->getValueType(), indices, classname);
 
     llvm::Constant* sv = csv.create(sty_vtable);
 
@@ -342,36 +407,138 @@ GlobalVariable* create_object_node(Module& M, const char* name, StructType* sty_
 }
 
 GlobalVariable* baseObject, * derivedObject, * base2Object;
+GlobalVariable* pbaseObject, * pderivedObject, * pbase2Object;
 StructType* ty_vtable;
 StructType* ty_object;
 GlobalVariable* baseClassName;
 
-void createBB_print_typeinfo(Module& M, Function* f)
-{
-    GlobalVariable* testObject = base2Object;     //baseObject, base2Object, derivedObject
 
+void getClassInfo(Module& M, GlobalVariable* obj, Value*& className, Value*&parentVTable)
+{
     std::vector<Value*>indices;
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    Value* gep = Builder.CreateGEP(baseObject->getType()->getPointerElementType(), testObject, indices);        //crashes solve: forgot to setbody()    
+    make_arg_indices(indices, 0, 0);
+    Value* gep = Builder.CreateGEP(obj->getType()->getPointerElementType(), obj, indices);        //crashes solve: forgot to setbody()    
 
     Value* vtablePointer = Builder.CreateLoad(gep);
-    PP(vtablePointer);      //vtablePointer:  %0 = load %vtable_type*, %vtable_type** getelementptr inbounds (%object_type, %object_type* @object_base, i32 0, i32 0), align 8
+
+    Value* gep3 = Builder.CreateGEP(ty_vtable, vtablePointer, indices);
+    parentVTable = Builder.CreateLoad(gep3);
 
     indices.clear();
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    make_arg_indices(indices, 0, 1);
+
     Value* gep2 = Builder.CreateGEP(ty_vtable, vtablePointer, indices);
+    className = Builder.CreateLoad(gep2);
+}
 
-    Value* classname = Builder.CreateLoad(gep2); 
-    PP(classname);
+/*
+//most of print_baseclass is getBaseVTable(), except last 3 lines, leading with ';'
+define i8* @print_baseclass() {
+entry:
+  %pvt = alloca %vtable_type*, align 8
+  %0 = load %vtable_type*, %vtable_type** getelementptr inbounds (%object_type, %object_type* @object_base2, i32 0, i32 0), align 8
+  store %vtable_type* %0, %vtable_type** %pvt, align 8
+  br label %loop_condition
 
+loop_condition:                                   ; preds = %loop_body, %entry
+  %1 = load %vtable_type*, %vtable_type** %pvt, align 8
+  %2 = getelementptr %vtable_type, %vtable_type* %1, i32 0, i32 0
+  %3 = load %vtable_type*, %vtable_type** %2, align 8
+  %printf = call i32 (i8*, ...) @printf([32 x i8]* @printfn0, %vtable_type* %3)
+  %4 = icmp ne %vtable_type* %3, null
+  br i1 %4, label %loop_body, label %loop_exit
+
+loop_body:                                        ; preds = %loop_condition
+  store %vtable_type* %3, %vtable_type** %pvt, align 8
+  br label %loop_condition
+
+loop_exit:                                        ; preds = %loop_condition
+  %5 = load %vtable_type*, %vtable_type** %pvt, align 8
+  ; %6 = getelementptr %vtable_type, %vtable_type* %5, i32 0, i32 1
+  ; %7 = load i8*, i8** %6, align 8
+  ; ret i8* %7
+}
+*/
+// input obj should be a pointer, but, here it is an object(one load missing in this case) for test purpose
+Value* getBaseVTable(Module& M, Function* f, GlobalVariable* obj)   //obj is of object_type, in which, the first ele is vtable_type
+{
+    //create loop_condition, loop_body, loop_exit, 3 basic blocks.
+    BasicBlock* loop_condition = BasicBlock::Create(TheContext, "loop_condition", f);
+    BasicBlock* loop_body = BasicBlock::Create(TheContext, "loop_body", f);
+    BasicBlock* loop_exit = BasicBlock::Create(TheContext, "loop_exit", f);
+
+    std::vector<Value*>indices;
+    make_arg_indices(indices, 0, 0);
+    Value* gep = Builder.CreateGEP(ty_object, obj, indices);    //get pp vtable
+
+    // create a local automatic variable for vtable pointer.
+    AllocaInst* pvt = CreateEntryBlockAlloca(ty_vtable->getPointerTo(), f, "pvt");
+    Builder.CreateStore(Builder.CreateLoad(gep), pvt);      //save object's vtable to pvt
+    Builder.CreateBr(loop_condition);
+
+    //
+    // loop condition
+    //
+    Builder.SetInsertPoint(loop_condition);
+    gep = Builder.CreateGEP(Builder.CreateLoad(pvt), indices);
+    Value* parent = Builder.CreateLoad(gep);
+    //call_printf(M, "in loop condition, parent = %p\n", 1, parent);
+    Value* icmp = Builder.CreateICmpNE(parent, ConstantPointerNull::get(ty_vtable->getPointerTo()));
+    Builder.CreateCondBr(icmp, loop_body, loop_exit);
+
+    //
+    // loop body
+    //
+    Builder.SetInsertPoint(loop_body);
+    Builder.CreateStore(parent, pvt);
+    Builder.CreateBr(loop_condition);
+
+    //
+    // loop exit
+    //
+    Builder.SetInsertPoint(loop_exit);
+
+    return Builder.CreateLoad(pvt);
+}
+
+/* result:
+define i8* @print_typeinfo() {
+entry:
+  %0 = load %vtable_type*, %vtable_type** getelementptr inbounds (%object_type, %object_type* @object_base2, i32 0, i32 0), align 8
+  %1 = getelementptr %vtable_type, %vtable_type* %0, i32 0, i32 1
+  %2 = load i8*, i8** %1, align 8
+  ret i8* %2
+}
+*/
+void createBB_print_typeinfo(Module& M, Function* f)
+{
+    Value* classname, * parentVTable;
+    getClassInfo(M, base2Object, classname, parentVTable);       //baseObject, base2Object, derivedObject
     Builder.CreateRet(classname);
 }
 
+void createBB_print_baseclass(Module& M, Function* f)
+{
+    Value* baseVTable = getBaseVTable(M, f, base2Object);           //baseObject, base2Object, derivedObject
+    //PP(baseVTable);
+
+    std::vector<Value*>indices;
+    make_arg_indices(indices, 0, 1);
+    Value* gep = Builder.CreateGEP(ty_vtable, baseVTable, indices);
+
+    Builder.CreateRet(Builder.CreateLoad(gep));
+}
+
+
+void createBB_isDerived(Module& M, Function* f)
+{
+    Builder.CreateRet(CConstant::getBool(TheContext, true));
+}
 
 void create_dynamic_cast(Module& M)
 {
+    declare_printf();
+
     CGlobalVariables gVars;
     gVars.setModule(&M);
 
@@ -420,8 +587,18 @@ void create_dynamic_cast(Module& M)
     Function* f_print_typeinfo = print_typeinfo.create(*TheModule.get(), Function::ExternalLinkage, "print_typeinfo");
 
     //
+    // create a function, that prints the base class type
+    //
+    CFunction print_baseclass;
+    print_baseclass.setRetType(Type::getInt8PtrTy(M.getContext()));
+    Function* f_print_baseclass = print_baseclass.create(*TheModule.get(), Function::ExternalLinkage, "print_baseclass");
+
+    //
     // create a function, that checks if an object is of type base or derived.
     //
+    CFunction isDerived;
+    isDerived.setRetType(Type::getInt1PtrTy(M.getContext()));
+    Function* f_isDerived = isDerived.create(*TheModule.get(), Function::ExternalLinkage, "isDerived");
 
     //
     // dynamic_cast
@@ -430,23 +607,43 @@ void create_dynamic_cast(Module& M)
     //
     // create basic block for each function
     // 
-    create_BB(createBB_print_typeinfo, f_print_typeinfo);
+    create_BB(createBB_print_typeinfo, f_print_typeinfo, false);
+    create_BB(createBB_print_baseclass, f_print_baseclass, false);
+    create_BB(createBB_isDerived, f_isDerived, false);
 
 
 
     //
-    // call set functions
+    // call functions
     //
     auto H = TheJIT->addModule(std::move(TheModule));
 
     InitializeModuleAndPassManager();
 
     // print typeinfo
+#if 1
     auto ExprSymbol = TheJIT->findSymbol("print_typeinfo");
     char*(*FP_print_typeinfo)() = (char* (*)())(intptr_t)cantFail(ExprSymbol.getAddress());
 
     char* typeinfo = FP_print_typeinfo();
     printf("typeinfo = %s\n", typeinfo);
+#endif
+
+#if 1
+    auto ExprSymbol1 = TheJIT->findSymbol("print_baseclass");
+    char* (*FP_print_baseclass)() = (char* (*)())(intptr_t)cantFail(ExprSymbol1.getAddress());
+
+    char* baseclassname = FP_print_baseclass();
+    printf("baseclassname = %s\n", baseclassname);
+#endif
+
+#if 1
+    auto ExprSymbol2 = TheJIT->findSymbol("isDerived");
+    bool (*FP_isDerived)() = (bool (*)())(intptr_t)cantFail(ExprSymbol2.getAddress());
+
+    bool bIsDerived = FP_isDerived();
+    printf("%s\n", (bIsDerived ? "is derived" : "not derived"));
+#endif
 
     //
     TheJIT->removeModule(H);
@@ -507,8 +704,7 @@ void createBB_tc_sib_constructor(Module& M, Function* f)
     Argument* pArgThis = f->getArg(0);
 
     std::vector<Value*>indices;
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    make_arg_indices(indices, 0, 0);
     Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
 
     Builder.CreateStore(CConstant::getInt32(M.getContext(), 111), gep);
@@ -528,8 +724,7 @@ void createBB_tc_sid_constructor(Module& M, Function* f)
     Argument* pArgThis = f->getArg(0);
 
     std::vector<Value*>indices;
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    make_arg_indices(indices, 0, 1);
     Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
 
     Builder.CreateStore(CConstant::getInt32(M.getContext(), 222), gep);
@@ -551,8 +746,8 @@ void createBB_tc_f_tc_sib_set(Module& M, Function* f)
     Argument* pArgAge = f->getArg(1);
 
     std::vector<Value*>indices;
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    make_arg_indices(indices, 0, 0);
+
     Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
 
     Builder.CreateStore(pArgAge, gep);
@@ -584,8 +779,7 @@ void createBB_tc_f_tc_sid_setAll(Module& M, Function* f)
     Builder.CreateCall(f_tc_sib_set, args);
 
     std::vector<Value*>indices;
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    make_arg_indices(indices, 0, 1);
     Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
 
     Builder.CreateStore(pArgAge, gep);
@@ -704,8 +898,8 @@ void createBB_tc_constructor(Module& M, Function* f)
     Argument* pArgThis = f->getArg(0);
    
     std::vector<Value*>indices;
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    make_arg_indices(indices, 0, 1);
+
     Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
 
     Builder.CreateStore(CConstant::getInt32(M.getContext(), 999), gep);
@@ -727,8 +921,8 @@ void createBB_tc_setAge(Module& M, Function* f)
     Argument* pArgAge = f->getArg(1);
 
     std::vector<Value*>indices;
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    make_arg_indices(indices, 0, 1);
+
     Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
 
     Builder.CreateStore(pArgAge, gep);
@@ -741,8 +935,8 @@ void createBB_tc_getAge(Module& M, Function* f)
     Argument* pArgThis = f->getArg(0);
 
     std::vector<Value*>indices;
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    make_arg_indices(indices, 0, 1);
+
     Value* gep = Builder.CreateGEP(pArgThis->getType()->getPointerElementType(), pArgThis, indices);        //crashes solve: forgot to setbody()    
 
     Builder.CreateRet(Builder.CreateLoad(gep));
@@ -911,6 +1105,7 @@ void createBB_external_variables(Module& M, Function* f)
 
 #define FP_TRUNC
 #ifdef FP_TRUNC
+    vfp = nullptr;      //suppress warning
     Value* extended = Builder.CreateFPTrunc(vdp, Type::getFloatTy(TheContext));
     Builder.CreateStore(extended, fp);
 #endif
@@ -1029,8 +1224,8 @@ void createBB_cast(Module& M, Function* f)
 
     // store 0x12345678 to struct.int
     std::vector<Value*>indices;
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
+    make_arg_indices(indices, 0, 0);
+
     Value* gep = Builder.CreateGEP(casted, indices);        //crashes solve: forgot to setbody()
 
     //
@@ -1092,19 +1287,10 @@ void test_conversion(Module&M)
 //////////////////////////////////////////////////////////////////////////
 //                      test_call_external_variadic 
 // 
+
 void test_call_external_variadic(void)
 {
-#if 0
-    Type* args = PointerType::get(Type::getInt8Ty(TheContext), 0);
-    Type* retType = IntegerType::getInt8PtrTy(TheContext);
-#else
-    std::vector<Type*> args;
-    args.push_back(Type::getInt8PtrTy(TheContext));
-    Type* retType = Builder.getInt32Ty();
-#endif
-
-    FunctionType* printfType = FunctionType::get(retType, args, true);
-    TheModule.get()->getOrInsertFunction("printf", printfType);
+    declare_printf();
 
     auto H = TheJIT->addModule(std::move(TheModule));
 
@@ -1204,8 +1390,7 @@ void createBB_struct(Module&M, Function* f)
     PP(gv);                 //gv:@gv = private global %cs { i32 12345, i8 88, float 1.110000e+02, double 2.220000e+02 }, align 1
 
     std::vector<Value*>indices;
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 1));
+    make_arg_indices(indices, 0, 1);
 
     Value* gep = Builder.CreateGEP(gv, indices);        //crashes solve: forgot to setbody()
     PP(gep);                //gep:i8* getelementptr inbounds (%cs, %cs* @gv, i32 0, i32 1)
@@ -1283,8 +1468,7 @@ void createBB_string(Module& M, Function* f)
     PP(gv);         //gv:@str = private global [20 x i8] c"##Hello World\00", align 1
 
     std::vector<Value*>indices;
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 0));
-    indices.push_back(ConstantInt::get(Type::getInt32Ty(TheContext), 2));
+    make_arg_indices(indices, 0, 2);
 
     AllocaInst* Alloca = CreateEntryBlockAlloca(Type::getInt8PtrTy(TheContext), f, "");
 
