@@ -14,6 +14,7 @@ for example: <br>
 9, virtual functions <br>
 10, class inheritance <br>
 11, typeinfo and dynamic_cast <br>
+12, how to debug JIT <br>
 <br>
 All functions are in testllvm.cpp
 <br>
